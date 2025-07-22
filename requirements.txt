@@ -14,3 +14,7 @@ stable-baselines3==2.3.2
 opencv-python-headless==4.11.0.86
 torch==2.6.0
 scikit-image==0.24.0
+
+lazy_loader==0.4
+glfw==2.9.0
+-e ./MIMo
