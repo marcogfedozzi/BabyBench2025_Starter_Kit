@@ -1,3 +1,6 @@
+# Logging
+sac_mimo_logging
+
 # BabyBench files and directories
 results/*
 !results/__init__.py
