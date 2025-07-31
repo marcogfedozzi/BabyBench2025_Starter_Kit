@@ -36,6 +36,28 @@ from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
 from torchrl.record.loggers import generate_exp_name, get_logger
 
 import numpy as np
+import gymnasium as gym
+
+import time
+from tqdm import tqdm
+
+class IMWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+
+    def compute_intrinsic_reward(self, obs):
+        intrinsic_reward = np.sum(obs['touch'] > 1e-6) / len(obs['touch'])
+        return intrinsic_reward
+
+    def step(self, action):
+        obs, extrinsic_reward, terminated, truncated, info = self.env.step(action)
+        intrinsic_reward = self.compute_intrinsic_reward(obs)
+        total_reward = intrinsic_reward + extrinsic_reward # extrinsic reward is always 0  
+        return obs, total_reward, terminated, truncated, info
+
+    def reset(self, **kwargs):
+        return self.env.reset(**kwargs)
+
 
 def main():
     torch.manual_seed(42)
@@ -48,12 +70,8 @@ def main():
 
 
     print("Making env")
-    env = bb_utils.make_env(config, training=False)
-
-    def _touch_reward(self, achieved_goal, desired_goal, info):
-        tot_force = np.abs(self.touch.sensor_outputs) # WIP
-
-    env.compute_reward = 
+    env = IMWrapper(bb_utils.make_env(config, training=True))
+    # Wrap env
 
     logger = get_logger(
         logger_type='wandb',
@@ -81,22 +99,7 @@ def main():
     env.set_seed(42)
     data = env.reset()
 
-
     print(data)
-
-    """
-    actor = Actor(
-
-        MLP(
-            in_features=env.observation_spec["touch"].shape[-1],
-            out_features=env.action_spec.shape[-1],
-            num_cells=[64, 64],
-            activation_class=torch.nn.ReLU,
-            device=device
-        ),
-        in_keys=["touch"],
-    )
-    """
 
     hidden_size = 1024
 
@@ -157,8 +160,6 @@ def main():
         in_keys=["hidden", "action"], out_keys=["value"]
     )
 
-    MAX_EPS = 10
-
     ac_module = ActorCriticOperator(
         backbone,
         actor,
@@ -198,55 +199,31 @@ def main():
 
     # Collector
 
-    _fpb = 100
+    _fpb = 16
 
     collector = SyncDataCollector(
         env,
         policy_module,
         frames_per_batch=_fpb,
-        total_frames=5000,
+        total_frames=10_000,
         device=device,
         init_random_frames=500,
     )
 
+    # TODO: check running async collector https://docs.pytorch.org/rl/main/reference/collectors.html#running-the-collector-asynchronously
+
     replay_buffer = ReplayBuffer(
-        storage=LazyTensorStorage(max_size=_fpb),
+        batch_size=16,
+        storage=LazyTensorStorage(max_size=5_000),
         sampler=SamplerWithoutReplacement(),
         transform=lambda data: data.to(device, non_blocking=True) if data.device != device else data.clone(),
     )
-
-
-    # Rollout can be done step by step...
-
-    """
-    data_stack = TensorDict(batch_size=[MAX_EPS])
-
-    for epx in range(MAX_EPS):
-        data = sequence(data.to(device))
-        data_stack[epx] = env.step(data)
-
-        if data["done"].any():
-            print(f"Episode {epx} finished")
-            break
-        data = step_mdp(data)
-
-    print("Collected data:", data_stack)
-    """
-
-    """
-    env.reset()
-    # Or in a single call
-    tensordict_rollout = env.rollout(policy=sequence, max_steps=MAX_EPS, auto_cast_to_device=True)
-    print(tensordict_rollout)
-    """
 
 
     # Now onto training!
 
     # First step: reward := avg number of active touch sensors
 
-    import time
-    from tqdm import tqdm
     pbar = tqdm(total=collector.total_frames)
 
     collected_obs = 0
@@ -254,6 +231,8 @@ def main():
     eval_iter = 1000
 
     # Training
+
+    print("--- Training starting ---")
 
     collection_start = time.time()
 
@@ -282,6 +261,8 @@ def main():
                 # Sample from the replay buffer
                 sampled_td = replay_buffer.sample()
                 sample_time += time.time() - sample_start
+
+                print(sampled_td)
 
 
                 # Compute the loss
