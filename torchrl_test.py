@@ -7,8 +7,10 @@ import yaml
 from torchrl.envs.libs.gym import GymEnv, GymWrapper, set_gym_backend
 from torchrl.envs import (
     Compose,
+    SelectTransform,
     NoopResetEnv,
     ObservationNorm,
+    RewardSum,
     StepCounter,
     ToTensorImage,
     TransformedEnv,
@@ -18,7 +20,7 @@ from torchrl.envs.utils import step_mdp
 from torchrl.envs.utils import ExplorationType, set_exploration_type
 
 
-from torchrl.modules import Actor, ActorCriticOperator, ProbabilisticActor
+from torchrl.modules import Actor, ActorCriticOperator, ProbabilisticActor, ValueOperator
 from tensordict.nn import (TensorDictModule, TensorDictSequential, 
                         ProbabilisticTensorDictModule, 
                         ProbabilisticTensorDictSequential)
@@ -115,7 +117,12 @@ def main():
     print("Converting to GymWrapper")
     env = TransformedEnv(
             GymWrapper(env),
-            transform=ObservationNorm(in_keys=["touch"]),
+            transform=Compose(
+                ObservationNorm(in_keys=["touch"]),
+                SelectTransform("touch"), # only keep the "touch" modality in the observation
+                StepCounter(),
+                RewardSum()
+            )
 
     )
 
@@ -124,7 +131,7 @@ def main():
     # loc and scale or, as done here, by runnning some steps of the MDP and computing the
     # distribution parameters based on the observation.
 
-    env.transform.init_stats(num_iter=100, reduce_dim=0, cat_dim=0)
+    env.transform[0].init_stats(num_iter=100, reduce_dim=0, cat_dim=0)
 
     env.set_seed(42)
     data = env.reset()
@@ -166,7 +173,7 @@ def main():
                 MLP(
                     in_features=hidden_size,
                     out_features=env.action_spec.shape[-1] * 2,  # mean and std
-                    num_cells=[128, 364],
+                    num_cells=[64, 128],
                     activation_class=torch.nn.ReLU,
                     device=device
                 ),
@@ -188,14 +195,14 @@ def main():
     )
     
 
-    qvalue = TensorDictModule(
+    qvalue = ValueOperator(
         MLP(
             out_features=1,
-            num_cells=[400, 32],
+            num_cells=[64, 32],
             activation_class=torch.nn.ReLU,
             device=device
         ),
-        in_keys=["hidden", "action"], out_keys=["value"] # it's a Q network, so the input is the (state, action) pair
+        in_keys=["hidden", "action"] # it's a Q network, so the input is the (state, action) pair
     )
 
     # Notice that we could simply use a TensorDictSequential, as the data flow
@@ -256,7 +263,7 @@ def main():
         env,
         policy_module,
         frames_per_batch=_fpb,
-        total_frames=10_000,
+        total_frames=5_000,
         device=device,
         init_random_frames=100,
     )
@@ -310,12 +317,8 @@ def main():
                 sampled_td = replay_buffer.sample()
                 sample_time += time.time() - sample_start
 
-                print(sampled_td['next', 'reward'])
-
                 # Compute the loss
                 loss_td = loss_module(sampled_td)
-
-                print(loss_td)
 
                 loss_actor = loss_td["loss_actor"]
                 loss_critic = loss_td["loss_qvalue"]
@@ -337,7 +340,7 @@ def main():
                 loss_alpha.backward()
                 optimizer_alpha.step()
 
-                losses[i] = loss_td.select("loss_actor", "loss_qvalue", "loss_alpha").detach()
+                losses[j] = loss_td.select("loss_actor", "loss_qvalue", "loss_alpha").detach()
 
                 target_net_updater.step() # Polyak update
 
@@ -355,9 +358,10 @@ def main():
         if len(episode_rewards) > 0:
             episode_length = td["next", "step_count"][episode_end]
             metrics_to_log["train/reward"] = episode_rewards.mean().item()
+            metrics_to_log["train/episode_reward"] = td["next", "episode_reward"].mean().item()
             metrics_to_log["train/episode_length"] = episode_length.sum().item()/len(episode_length)
         
-        if collected_frames >= collector.init_random_frames:
+        if collected_obs >= collector.init_random_frames:
             metrics_to_log["train/q_loss"] = losses.get("loss_qvalue").mean().item()
             metrics_to_log["train/actor_loss"] = losses.get("loss_actor").mean().item()
             metrics_to_log["train/alpha_loss"] = losses.get("loss_alpha").mean().item()
@@ -373,6 +377,7 @@ def main():
         # Notice that for now we're evauating using the same environment used for training,
         # not ideal, to be changed
         if abs(collected_frames % eval_iter) < collector.frames_per_batch:
+            print("Eval")
             with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
                 eval_start = time.time()
 
