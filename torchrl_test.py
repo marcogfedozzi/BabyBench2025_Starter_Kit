@@ -60,6 +60,21 @@ class IMWrapper(gym.Wrapper):
 
 
 def main():
+
+    # An intro on TensorDicts
+    #
+    # https://docs.pytorch.org/tensordict/stable/index.html
+    #
+    # TorchRL is designed to be used with TensorDicts (TD), a data type native of pytorch "tensordict" library
+    # TDs functionally act like dictionaries, making it super easy to pass complex aggregated data, but with
+    # (almost) the same speed and efficiency as regular Tensors (there's a slight overhead, but waaaay less than
+    # it would be by using regular tensors, and saves you the headache of having to manage multiple different data types).
+    # It makes it really easy to build complex networks, as you can specify which keys of the TD go as input and which come out
+    # of each module. In this way most networks with multiple parallel branches can be defined as simple sequential nets,
+    # as the data flow will be dictated by the in and out keys! (see example on SAC module later).
+
+    # Seeding and config loading
+
     torch.manual_seed(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -68,11 +83,10 @@ def main():
     with open('examples/config_test_installation.yml') as f:
         config = yaml.safe_load(f)
 
+    # Logger
 
-    print("Making env")
-    env = IMWrapper(bb_utils.make_env(config, training=True))
-    # Wrap env
-
+    # using wandb for tracking experiment progress across multiple runs
+    # especially good for later hyperparams tuning
     logger = get_logger(
         logger_type='wandb',
         logger_name='sac_mimo_logging',
@@ -84,15 +98,31 @@ def main():
         }
     )
 
+    # Environment
 
-    # We need to convert the environment in a TorchRL compatible format
-    # luckily, since the env is a Gym env under the hood, we can use the GymWrapper
+    # MIMo's env is already Gym-compatible, but we need to wrap it into a torchrl interface
+    # to have all the torchrl modules handle its state-action dict without hassle.
+    # TorchRL uses the TorchRL Episode Data (TED) format (https://docs.pytorch.org/rl/stable/reference/data.html#ted-format)
+    # that, simply put, contains the observation at stept 't', action executed at step 't', and the resulting observation
+    # and reward obtained after the transition (step 't+1'). The data pertaining to step 't+1' is contained in a TD within the TD
+    # (yes, TDs can be nested!) under the key "next".
+    # Notice that to access nested TDs we use multiple keys in a pair of square brackets, e.g. data["next", "touch"], instead of data["next"]["touch"];
+    # string keys in TDs behave exactly as int keys do in regular Tensors!
+
+
+    print("Making env")
+    env = IMWrapper(bb_utils.make_env(config, training=True))
     print("Converting to GymWrapper")
     env = TransformedEnv(
             GymWrapper(env),
             transform=ObservationNorm(in_keys=["touch"]),
 
     )
+
+    # Many "transforms" can be applied to an environment, here we're just using one
+    # to normalize the touch observation. Normalization can be done by passing the desired
+    # loc and scale or, as done here, by runnning some steps of the MDP and computing the
+    # distribution parameters based on the observation.
 
     env.transform.init_stats(num_iter=100, reduce_dim=0, cat_dim=0)
 
@@ -101,15 +131,20 @@ def main():
 
     print(data)
 
-    hidden_size = 1024
+    # SAC Module
 
-    # Test to create a architecture reminiscent of a Soft Actor Critic (SAC) policy
-
+    # Why SAC? It is designed to handle continuous action spaces (like joint activation here!)
+    # with high dimensional input spaces (like touch here!).
+    #
+    # The net is comprised of an Actor and a Critic module, taking as input an embedding of the
+    # observation, obtained via compression by a common backbone
+    #
     # MLP backbone (input: touch, output: hidden)
-
+    #
     # MLP actor (input: hidden, output: action mean and std) -> probabilistic actor
     # MLP value (input: hidden, action, output: value)
 
+    hidden_size = 1024
 
     backbone = TensorDictModule(
          MLP(
@@ -122,6 +157,9 @@ def main():
         in_keys=["touch"], out_keys=["hidden"]
     )
 
+
+    # our actor will output a probabilistic action of dim = num of actuated joints
+    # instead of the deterministic activation
     actor = ProbabilisticActor(
         module=TensorDictModule(
             torch.nn.Sequential(
@@ -132,14 +170,14 @@ def main():
                     activation_class=torch.nn.ReLU,
                     device=device
                 ),
-                NormalParamExtractor()
+                NormalParamExtractor() # specify that the output has to be split; by default the "scale" is mapped onto positive range with a softplus
             ),
-            in_keys=["hidden"], out_keys=["loc", "scale"]
+            in_keys=["hidden"], out_keys=["loc", "scale"] #
         ),
         spec=env.action_spec,
         in_keys=["loc", "scale"],
         out_keys=["action"],
-        distribution_class=TanhNormal,
+        distribution_class=TanhNormal, # we use a scaled Tanh to map into the correct action values
         distribution_kwargs={
             "low": env.action_spec.space.low,
             "high": env.action_spec.space.high,
@@ -157,9 +195,11 @@ def main():
             activation_class=torch.nn.ReLU,
             device=device
         ),
-        in_keys=["hidden", "action"], out_keys=["value"]
+        in_keys=["hidden", "action"], out_keys=["value"] # it's a Q network, so the input is the (state, action) pair
     )
 
+    # Notice that we could simply use a TensorDictSequential, as the data flow
+    # is dictated by the in and out keys of each module.
     ac_module = ActorCriticOperator(
         backbone,
         actor,
@@ -169,7 +209,7 @@ def main():
     policy_module = ac_module.get_policy_operator()
     qvalue_module = ac_module.get_critic_operator()
 
-
+    # Initialize the lazy modules
     with torch.no_grad(), set_exploration_type(ExplorationType.RANDOM):
         td = env.fake_tensordict()
         td = td.to(device)
@@ -177,15 +217,18 @@ def main():
             net(td)
 
     # Loss
+    #
+    # Already managed multiple copies of the Q net, the loss function, and all the rest
 
     loss_module = SACLoss(
         actor_network=policy_module,
         qvalue_network=qvalue_module,
     )
 
-    #loss_module.make_value_estimator(ValueEstimators.GAE, gamma=0.99, lmbda=0.95)
+    # Can select the type of value estimator: TD0, TD1, TDgamma
     loss_module.make_value_estimator(gamma=0.99)
 
+    # Specify that the target Q net(s) will be updated continuously with a Polyak update
     target_net_updater = SoftUpdate(
         loss_module=loss_module,
         eps=0.995 # polyak update value
@@ -198,6 +241,14 @@ def main():
     optimizer_alpha     = torch.optim.Adam(params=[loss_module.log_alpha], lr=3e-4)
 
     # Collector
+    #
+    # The collector is what manages the run of the environment. You specify a maximum number of steps to run it
+    # for (also infinite) and how many steps to return in a batch (sequence). It is also possible to run the
+    # environment with random actions for a specific amount of steps, to collect data before training.
+    #
+    # The simplest collector is the Sync one, that runs one instance of the environment and of the policy
+    # in sequence. More complex collectors exist, allowing one to parallelize environment execution and
+    # policy training, as well as running multiple environments in parallel (https://docs.pytorch.org/rl/main/reference/collectors.html#running-the-collector-asynchronously).
 
     _fpb = 16
 
@@ -207,10 +258,13 @@ def main():
         frames_per_batch=_fpb,
         total_frames=10_000,
         device=device,
-        init_random_frames=500,
+        init_random_frames=100,
     )
 
-    # TODO: check running async collector https://docs.pytorch.org/rl/main/reference/collectors.html#running-the-collector-asynchronously
+    # Replay Buffer
+    #
+    # This is especially useful for offpolicy learning (like SAC), as it can be filled with sequences 
+    # extracted from the collector, and can later be sampled for random transitions.
 
     replay_buffer = ReplayBuffer(
         batch_size=16,
@@ -220,17 +274,13 @@ def main():
     )
 
 
-    # Now onto training!
-
-    # First step: reward := avg number of active touch sensors
+    # Training
 
     pbar = tqdm(total=collector.total_frames)
 
     collected_obs = 0
 
     eval_iter = 1000
-
-    # Training
 
     print("--- Training starting ---")
 
@@ -240,16 +290,14 @@ def main():
 
         collection_time = time.time() - collection_start
 
-
-        collector.update_policy_weights_()
+        collector.update_policy_weights_() # Needed for aSync collection
         collected_frames = td.numel()
         pbar.update(collected_frames)
 
-        replay_buffer.extend(td)
+        replay_buffer.extend(td) # put sequence in the buffer
 
-        collected_obs += td.numel()
+        collected_obs += collected_frames
         training_start_time = time.time()
-
 
         if collected_obs >= collector.init_random_frames:
 
@@ -262,8 +310,7 @@ def main():
                 sampled_td = replay_buffer.sample()
                 sample_time += time.time() - sample_start
 
-                print(sampled_td)
-
+                print(sampled_td['next', 'reward'])
 
                 # Compute the loss
                 loss_td = loss_module(sampled_td)
@@ -292,7 +339,7 @@ def main():
 
                 losses[i] = loss_td.select("loss_actor", "loss_qvalue", "loss_alpha").detach()
 
-                target_net_updater.step()
+                target_net_updater.step() # Polyak update
 
         traning_time = time.time() - training_start_time
 
@@ -323,6 +370,8 @@ def main():
         
 
         # Evaluation
+        # Notice that for now we're evauating using the same environment used for training,
+        # not ideal, to be changed
         if abs(collected_frames % eval_iter) < collector.frames_per_batch:
             with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
                 eval_start = time.time()
