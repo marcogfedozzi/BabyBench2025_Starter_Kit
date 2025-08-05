@@ -82,7 +82,7 @@ def main():
 
     print(f"Using device: {device}")
 
-    with open('examples/config_test_installation.yml') as f:
+    with open('examples/config_training.yml') as f:
         config = yaml.safe_load(f)
 
     # Logger
@@ -115,23 +115,29 @@ def main():
     print("Making env")
     env = IMWrapper(bb_utils.make_env(config, training=True))
     print("Converting to GymWrapper")
-    env = TransformedEnv(
-            GymWrapper(env),
-            transform=Compose(
-                ObservationNorm(in_keys=["touch"]),
-                SelectTransform("touch"), # only keep the "touch" modality in the observation
-                StepCounter(),
-                RewardSum()
-            )
 
-    )
+    TO_TRANSFORM = False
 
-    # Many "transforms" can be applied to an environment, here we're just using one
-    # to normalize the touch observation. Normalization can be done by passing the desired
-    # loc and scale or, as done here, by runnning some steps of the MDP and computing the
-    # distribution parameters based on the observation.
+    if TO_TRANSFORM:
+        env = TransformedEnv(
+                GymWrapper(env),
+                transform=Compose(
+                    ObservationNorm(in_keys=["touch"]),
+                    SelectTransform("touch"), # only keep the "touch" modality in the observation
+                    StepCounter(),
+                    RewardSum()
+                )
 
-    env.transform[0].init_stats(num_iter=100, reduce_dim=0, cat_dim=0)
+        )
+        # Many "transforms" can be applied to an environment, here we're just using one
+        # to normalize the touch observation. Normalization can be done by passing the desired
+        # loc and scale or, as done here, by runnning some steps of the MDP and computing the
+        # distribution parameters based on the observation.
+
+        env.transform[0].init_stats(num_iter=100, reduce_dim=0, cat_dim=0)
+    else:
+        env = GymWrapper(env)
+
 
     env.set_seed(42)
     data = env.reset()
@@ -212,6 +218,8 @@ def main():
         actor,
         qvalue,
     ).to(device)
+
+    
 
     policy_module = ac_module.get_policy_operator()
     qvalue_module = ac_module.get_critic_operator()
@@ -356,10 +364,11 @@ def main():
         metrics_to_log = {}
 
         if len(episode_rewards) > 0:
-            episode_length = td["next", "step_count"][episode_end]
             metrics_to_log["train/reward"] = episode_rewards.mean().item()
-            metrics_to_log["train/episode_reward"] = td["next", "episode_reward"].mean().item()
-            metrics_to_log["train/episode_length"] = episode_length.sum().item()/len(episode_length)
+            if TO_TRANSFORM:
+                episode_length = td["next", "step_count"][episode_end]
+                metrics_to_log["train/episode_reward"] = td["next", "episode_reward"].mean().item()
+                metrics_to_log["train/episode_length"] = episode_length.sum().item()/len(episode_length)
         
         if collected_obs >= collector.init_random_frames:
             metrics_to_log["train/q_loss"] = losses.get("loss_qvalue").mean().item()
@@ -397,6 +406,10 @@ def main():
         if logger is not None:
             for metric_name, metric_value in metrics_to_log.items():
                 logger.log_scalar(metric_name, metric_value, collected_frames)
+    
+    # Save the model
+
+    torch.save(ac_module.state_dict(), config['model_path'])
 
 
 
