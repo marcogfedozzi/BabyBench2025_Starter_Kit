@@ -1,0 +1,6 @@
+select_transform:
+  _target_: torchrl.envs.transforms.SelectTransform
+  _convert_: partial
+
+  _args_: 
+    - touch

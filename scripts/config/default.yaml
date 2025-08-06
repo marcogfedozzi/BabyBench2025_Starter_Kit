@@ -1,0 +1,22 @@
+defaults:
+- _self_
+- tranforms@env.transforms: default
+- logger: wandb
+- module: sac
+
+seed: 42
+
+env:
+  transforms: null
+
+logger:
+  null
+
+module:
+  device: ${device}
+
+loss:
+  _target_: sac
+  _partial_: true
+  gamma: 0.99
+  polyak_eps: 0.995

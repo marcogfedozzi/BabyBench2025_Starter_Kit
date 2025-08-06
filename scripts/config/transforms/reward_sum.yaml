@@ -1,0 +1,3 @@
+reward_sum:
+  _target_: torchrl.envs.transforms.RewardSum
+  _convert_: partial

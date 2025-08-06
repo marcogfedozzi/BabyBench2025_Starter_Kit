@@ -1,0 +1,7 @@
+observation_norm:
+  _target_: torchrl.envs.transforms.ObservationNorm
+  _convert_: partial
+
+  loc: null
+  scale: null
+  standard_normal: false

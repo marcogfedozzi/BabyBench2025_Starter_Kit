@@ -42,25 +42,12 @@ import gymnasium as gym
 
 import time
 from tqdm import tqdm
-
-class IMWrapper(gym.Wrapper):
-    def __init__(self, env):
-        super().__init__(env)
-
-    def compute_intrinsic_reward(self, obs):
-        intrinsic_reward = np.sum(obs['touch'] > 1e-6) / len(obs['touch'])
-        return intrinsic_reward
-
-    def step(self, action):
-        obs, extrinsic_reward, terminated, truncated, info = self.env.step(action)
-        intrinsic_reward = self.compute_intrinsic_reward(obs)
-        total_reward = intrinsic_reward + extrinsic_reward # extrinsic reward is always 0  
-        return obs, total_reward, terminated, truncated, info
-
-    def reset(self, **kwargs):
-        return self.env.reset(**kwargs)
+import hydra
 
 
+from babybench import rewards as bb_rewards
+
+@hydra.main(version_base="1.3.2", config_path="../config/simulation", config_name="dataset_cnlzd")
 def main():
 
     # An intro on TensorDicts
@@ -99,21 +86,9 @@ def main():
             'group': None
         }
     )
-
-    # Environment
-
-    # MIMo's env is already Gym-compatible, but we need to wrap it into a torchrl interface
-    # to have all the torchrl modules handle its state-action dict without hassle.
-    # TorchRL uses the TorchRL Episode Data (TED) format (https://docs.pytorch.org/rl/stable/reference/data.html#ted-format)
-    # that, simply put, contains the observation at stept 't', action executed at step 't', and the resulting observation
-    # and reward obtained after the transition (step 't+1'). The data pertaining to step 't+1' is contained in a TD within the TD
-    # (yes, TDs can be nested!) under the key "next".
-    # Notice that to access nested TDs we use multiple keys in a pair of square brackets, e.g. data["next", "touch"], instead of data["next"]["touch"];
-    # string keys in TDs behave exactly as int keys do in regular Tensors!
-
-
+    
     print("Making env")
-    env = IMWrapper(bb_utils.make_env(config, training=True))
+    env = bb_rewards.MagnitudeTouchReward(bb_utils.make_env(config, training=True))
     print("Converting to GymWrapper")
 
     TO_TRANSFORM = False

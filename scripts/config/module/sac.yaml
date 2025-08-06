@@ -1,0 +1,62 @@
+_target_: torchrl.modules.ActorCriticOperator
+
+common_operator:
+  _target_: tensoridict.nn.TensorDictModule
+  module:
+    _target_: torchrl.modules.MLP
+    in_features: ${obs_shape:touch} # custom resolver
+    out_features: 1024
+    num_cells: [64, 64]
+    activation_class: ${cls:torch.nn.ReLU}
+    device: null
+  
+  in_keys: touch
+  out_keys: hidden
+
+policy_operator:
+  _target_: torchrl.modules.ProbabilisticActor
+  module: 
+    _target_: tensoridict.nn.TensorDictModule
+    module:
+      _target_: torch.nn.Sequential
+      _args_:
+        - _target_: torchrl.modules.MLP
+          in_features: ${common_operator.module.out_features}
+          out_features: ${act_shape} # custom resolver
+          num_cells: [64, 128]
+          activation_class: ${cls:torch.nn.ReLU}
+          device: null
+        - _target_: torchrl.modules.NormalParamExtractor
+          in_keys: hidden
+          out_keys: 
+            - loc
+            - scale
+  spec: null
+  in_keys:
+    - loc
+    - scale
+  out_keys:
+    - action
+  distribution_class: ${cls:torchrl.modules.TanhNormal}
+  distribution_kwargs:
+    low: ${act_space_low} # custom resolver
+    high: ${act_space_high} # custom resolver
+    tanh_loc: false
+  
+  default_interaction_type: ${cls:tensoridict.nn.InteractionType.RANDOM}
+  return_log_prob: false
+
+
+value_operator:
+  _target_: torchrl.modules.ValueOperator
+  module:
+    _target_: torchrl.modules.MLP
+    in_features: ${common_operator.module.out_features}
+    out_features: 1
+    num_cells: [64, 32]
+    activation_class: ${cls:torch.nn.ReLU}
+    device: null
+  
+  in_keys: hidden
+  out_keys: value
+  return_log_prob: false
