@@ -46,9 +46,12 @@ import hydra
 
 
 from babybench import rewards as bb_rewards
+from babybench import rl_utils as rlu
+
+from omegaconf import DictConfig
 
 @hydra.main(version_base="1.3.2", config_path="../config/simulation", config_name="dataset_cnlzd")
-def main():
+def main(cfg: DictConfig):
 
     # An intro on TensorDicts
     #
@@ -74,193 +77,34 @@ def main():
 
     # Logger
 
-    # using wandb for tracking experiment progress across multiple runs
-    # especially good for later hyperparams tuning
-    logger = get_logger(
-        logger_type='wandb',
-        logger_name='sac_mimo_logging',
-        experiment_name=generate_exp_name('SAC', 'test_touch'),
-        wandb_kwargs={
-            'mode': 'online',
-            'project': 'torchrl_sac_mimo',
-            'group': None
-        }
-    )
+    logger = rlu.get_logger(cfg)
     
+    # Env
+
     print("Making env")
-    env = bb_rewards.MagnitudeTouchReward(bb_utils.make_env(config, training=True))
-    print("Converting to GymWrapper")
-
-    TO_TRANSFORM = False
-
-    if TO_TRANSFORM:
-        env = TransformedEnv(
-                GymWrapper(env),
-                transform=Compose(
-                    ObservationNorm(in_keys=["touch"]),
-                    SelectTransform("touch"), # only keep the "touch" modality in the observation
-                    StepCounter(),
-                    RewardSum()
-                )
-
-        )
-        # Many "transforms" can be applied to an environment, here we're just using one
-        # to normalize the touch observation. Normalization can be done by passing the desired
-        # loc and scale or, as done here, by runnning some steps of the MDP and computing the
-        # distribution parameters based on the observation.
-
-        env.transform[0].init_stats(num_iter=100, reduce_dim=0, cat_dim=0)
-    else:
-        env = GymWrapper(env)
-
-
-    env.set_seed(42)
-    data = env.reset()
-
-    print(data)
+    env = rlu.make_env(cfg)
 
     # SAC Module
 
-    # Why SAC? It is designed to handle continuous action spaces (like joint activation here!)
-    # with high dimensional input spaces (like touch here!).
-    #
-    # The net is comprised of an Actor and a Critic module, taking as input an embedding of the
-    # observation, obtained via compression by a common backbone
-    #
-    # MLP backbone (input: touch, output: hidden)
-    #
-    # MLP actor (input: hidden, output: action mean and std) -> probabilistic actor
-    # MLP value (input: hidden, action, output: value)
+    agent = rlu.make_agent(cfg, env)
 
-    hidden_size = 1024
-
-    backbone = TensorDictModule(
-         MLP(
-            in_features=env.observation_spec["touch"].shape[-1],
-            out_features=hidden_size,
-            num_cells=[64, 64],
-            activation_class=torch.nn.ReLU,
-            device=device
-        ),
-        in_keys=["touch"], out_keys=["hidden"]
-    )
-
-
-    # our actor will output a probabilistic action of dim = num of actuated joints
-    # instead of the deterministic activation
-    actor = ProbabilisticActor(
-        module=TensorDictModule(
-            torch.nn.Sequential(
-                MLP(
-                    in_features=hidden_size,
-                    out_features=env.action_spec.shape[-1] * 2,  # mean and std
-                    num_cells=[64, 128],
-                    activation_class=torch.nn.ReLU,
-                    device=device
-                ),
-                NormalParamExtractor() # specify that the output has to be split; by default the "scale" is mapped onto positive range with a softplus
-            ),
-            in_keys=["hidden"], out_keys=["loc", "scale"] #
-        ),
-        spec=env.action_spec,
-        in_keys=["loc", "scale"],
-        out_keys=["action"],
-        distribution_class=TanhNormal, # we use a scaled Tanh to map into the correct action values
-        distribution_kwargs={
-            "low": env.action_spec.space.low,
-            "high": env.action_spec.space.high,
-            "tanh_loc": False
-        },
-        default_interaction_type=InteractionType.RANDOM,
-        return_log_prob=False
-    )
-    
-
-    qvalue = ValueOperator(
-        MLP(
-            out_features=1,
-            num_cells=[64, 32],
-            activation_class=torch.nn.ReLU,
-            device=device
-        ),
-        in_keys=["hidden", "action"] # it's a Q network, so the input is the (state, action) pair
-    )
-
-    # Notice that we could simply use a TensorDictSequential, as the data flow
-    # is dictated by the in and out keys of each module.
-    ac_module = ActorCriticOperator(
-        backbone,
-        actor,
-        qvalue,
-    ).to(device)
-
-    policy_module = ac_module.get_policy_operator()
-    qvalue_module = ac_module.get_critic_operator()
-
-    # Initialize the lazy modules
-    with torch.no_grad(), set_exploration_type(ExplorationType.RANDOM):
-        td = env.fake_tensordict()
-        td = td.to(device)
-        for net in [policy_module, qvalue_module]:
-            net(td)
+    # test it doable
+    for net in agent:
+        print(net)
 
     # Loss
     #
     # Already managed multiple copies of the Q net, the loss function, and all the rest
 
-    loss_module = SACLoss(
-        actor_network=policy_module,
-        qvalue_network=qvalue_module,
-    )
-
-    # Can select the type of value estimator: TD0, TD1, TDgamma
-    loss_module.make_value_estimator(gamma=0.99)
-
-    # Specify that the target Q net(s) will be updated continuously with a Polyak update
-    target_net_updater = SoftUpdate(
-        loss_module=loss_module,
-        eps=0.995 # polyak update value
-    )
+    loss_module, target_net_updater = rlu.make_loss(cfg, agent)
 
     # Optimizers
 
-    optimizer_actor     = torch.optim.Adam(params=policy_module.parameters(), lr=3e-4)
-    optimizer_critic    = torch.optim.Adam(params=qvalue_module.parameters(), lr=3e-4)
-    optimizer_alpha     = torch.optim.Adam(params=[loss_module.log_alpha], lr=3e-4)
+    optimizers = rlu.make_optimizers(cfg, agent, loss_module)
 
-    # Collector
-    #
-    # The collector is what manages the run of the environment. You specify a maximum number of steps to run it
-    # for (also infinite) and how many steps to return in a batch (sequence). It is also possible to run the
-    # environment with random actions for a specific amount of steps, to collect data before training.
-    #
-    # The simplest collector is the Sync one, that runs one instance of the environment and of the policy
-    # in sequence. More complex collectors exist, allowing one to parallelize environment execution and
-    # policy training, as well as running multiple environments in parallel (https://docs.pytorch.org/rl/main/reference/collectors.html#running-the-collector-asynchronously).
-
-    _fpb = 16
-
-    collector = SyncDataCollector(
-        env,
-        policy_module,
-        frames_per_batch=_fpb,
-        total_frames=5_000,
-        device=device,
-        init_random_frames=100,
-    )
-
-    # Replay Buffer
-    #
-    # This is especially useful for offpolicy learning (like SAC), as it can be filled with sequences 
-    # extracted from the collector, and can later be sampled for random transitions.
-
-    replay_buffer = ReplayBuffer(
-        batch_size=16,
-        storage=LazyTensorStorage(max_size=5_000),
-        sampler=SamplerWithoutReplacement(),
-        transform=lambda data: data.to(device, non_blocking=True) if data.device != device else data.clone(),
-    )
-
+    # Collector and ReplayBuffer
+    
+    collector, replay_buffer = rlu.make_collector_rb(cfg, env, agent)
 
     # Training
 
@@ -300,6 +144,10 @@ def main():
 
                 # Compute the loss
                 loss_td = loss_module(sampled_td)
+
+                # TODO: change this to be policy agnostic
+                # How: make the optimizers a dct with "actor", "qvalue", "alpha"
+                # pass the loss_td and search for the keys "loss_"+key in optim
 
                 loss_actor = loss_td["loss_actor"]
                 loss_critic = loss_td["loss_qvalue"]
@@ -387,4 +235,5 @@ def main():
 
 
 if __name__ == "__main__":
+    bbrl_utils.register_script_resolvers()
     main()

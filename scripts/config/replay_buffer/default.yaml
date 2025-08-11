@@ -1,0 +1,11 @@
+_target_: torchrl.data.replay_buffers.TensorDictReplayBuffer
+
+batch_size: ${collector.frames_per_batch}
+pin_memory: False
+prefetch: 3
+storage:
+  _target_: torchrl.data.replay_buffers.storages.LazyTensorStorage
+  max_size: 5_000  # buffer size
+sampler:
+  _target_: torchrl.data.replay_buffers.samplers.SamplerWithoutReplacement
+  

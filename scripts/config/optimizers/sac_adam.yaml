@@ -1,0 +1,11 @@
+optimizer_actor:
+  _target_: torch.optim.Adam
+  params: ${agent_policy_parameters} # custom resolver
+
+optimizer_critic:
+  _target_: torch.optim.Adam
+  params: ${agent_critic_parameters} # custom resolver
+
+optimizer_alpha:
+  _target_: torch.optim.Adam
+  params: ${loss_log_alpha} # custom resolver

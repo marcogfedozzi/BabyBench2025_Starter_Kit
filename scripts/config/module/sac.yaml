@@ -4,7 +4,7 @@ common_operator:
   _target_: tensoridict.nn.TensorDictModule
   module:
     _target_: torchrl.modules.MLP
-    in_features: ${obs_shape:touch} # custom resolver
+    in_features: ${env_obs_shape:touch} # custom resolver
     out_features: 1024
     num_cells: [64, 64]
     activation_class: ${cls:torch.nn.ReLU}
@@ -22,7 +22,7 @@ policy_operator:
       _args_:
         - _target_: torchrl.modules.MLP
           in_features: ${common_operator.module.out_features}
-          out_features: ${act_shape} # custom resolver
+          out_features: ${env_act_shape} # custom resolver
           num_cells: [64, 128]
           activation_class: ${cls:torch.nn.ReLU}
           device: null
@@ -39,8 +39,8 @@ policy_operator:
     - action
   distribution_class: ${cls:torchrl.modules.TanhNormal}
   distribution_kwargs:
-    low: ${act_space_low} # custom resolver
-    high: ${act_space_high} # custom resolver
+    low: ${env_act_space_low} # custom resolver
+    high: ${env_act_space_high} # custom resolver
     tanh_loc: false
   
   default_interaction_type: ${cls:tensoridict.nn.InteractionType.RANDOM}

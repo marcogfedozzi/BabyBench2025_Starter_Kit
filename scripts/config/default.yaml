@@ -2,21 +2,28 @@ defaults:
 - _self_
 - tranforms@env.transforms: default
 - logger: wandb
+- reward: touch
 - module: sac
+- loss: soft_sac_loss
+- collector: sync
+- reaply_buffer: default
 
 seed: 42
+
+device: ${get_device} # custom resolver
+
+reward: null
 
 env:
   transforms: null
 
 logger:
-  null
+  model_name: SAC
+  experiment_name: touch
 
 module:
   device: ${device}
 
-loss:
-  _target_: sac
-  _partial_: true
-  gamma: 0.99
-  polyak_eps: 0.995
+collector: null
+
+replay_buffer: null
