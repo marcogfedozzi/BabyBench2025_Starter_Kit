@@ -1,5 +1,7 @@
 # Logging
 sac_mimo_logging
+mimo_logging
+outputs
 
 # BabyBench files and directories
 results/*

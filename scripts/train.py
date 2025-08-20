@@ -1,71 +1,28 @@
 import torch
 import torchrl
 from tensordict import TensorDict
-from tensordict.nn import InteractionType
-import yaml
-
-from torchrl.envs.libs.gym import GymEnv, GymWrapper, set_gym_backend
-from torchrl.envs import (
-    Compose,
-    SelectTransform,
-    NoopResetEnv,
-    ObservationNorm,
-    RewardSum,
-    StepCounter,
-    ToTensorImage,
-    TransformedEnv,
-    ParallelEnv
-)
-from torchrl.envs.utils import step_mdp
 from torchrl.envs.utils import ExplorationType, set_exploration_type
-
-
-from torchrl.modules import Actor, ActorCriticOperator, ProbabilisticActor, ValueOperator
-from tensordict.nn import (TensorDictModule, TensorDictSequential, 
-                        ProbabilisticTensorDictModule, 
-                        ProbabilisticTensorDictSequential)
-from torchrl.objectives import SACLoss, SoftUpdate, ValueEstimators
-
-import babybench.utils as bb_utils
-
-from torchrl.modules import ConvNet, MLP
-from torch.nn import Linear
-from torchrl.modules import NormalParamExtractor, TanhNormal
-from torchrl.collectors import SyncDataCollector
-from torchrl.data.replay_buffers import ReplayBuffer
-from torchrl.data.replay_buffers.storages import LazyTensorStorage
-from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
-from torchrl.record.loggers import generate_exp_name, get_logger
-
-import numpy as np
-import gymnasium as gym
 
 import time
 from tqdm import tqdm
+import yaml
 import hydra
-
-
-from babybench import rewards as bb_rewards
+import logging
 from babybench import rl_utils as rlu
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
-@hydra.main(version_base="1.3.2", config_path="../config/simulation", config_name="dataset_cnlzd")
+import tensordict
+
+torchrl
+
+
+
+@hydra.main(version_base="1.3.2", config_path="./config", config_name="default")
 def main(cfg: DictConfig):
 
-    # An intro on TensorDicts
-    #
-    # https://docs.pytorch.org/tensordict/stable/index.html
-    #
-    # TorchRL is designed to be used with TensorDicts (TD), a data type native of pytorch "tensordict" library
-    # TDs functionally act like dictionaries, making it super easy to pass complex aggregated data, but with
-    # (almost) the same speed and efficiency as regular Tensors (there's a slight overhead, but waaaay less than
-    # it would be by using regular tensors, and saves you the headache of having to manage multiple different data types).
-    # It makes it really easy to build complex networks, as you can specify which keys of the TD go as input and which come out
-    # of each module. In this way most networks with multiple parallel branches can be defined as simple sequential nets,
-    # as the data flow will be dictated by the in and out keys! (see example on SAC module later).
-
     # Seeding and config loading
+
 
     torch.manual_seed(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -73,38 +30,41 @@ def main(cfg: DictConfig):
     print(f"Using device: {device}")
 
     with open('examples/config_training.yml') as f:
-        config = yaml.safe_load(f)
+        train_config = yaml.safe_load(f)
 
     # Logger
 
-    logger = rlu.get_logger(cfg)
+    logger = rlu.make_logger(cfg)
+    logging.info("Logger created")
     
     # Env
 
-    print("Making env")
-    env = rlu.make_env(cfg)
+    logging.info("Making env")
+    env = rlu.make_env(cfg, train_config)
+    logging.info("Env created")
 
     # SAC Module
 
-    agent = rlu.make_agent(cfg, env)
 
-    # test it doable
-    for net in agent:
-        print(net)
+    agent = rlu.make_agent(cfg, env)
+    logging.info("Agent created")
 
     # Loss
     #
     # Already managed multiple copies of the Q net, the loss function, and all the rest
 
     loss_module, target_net_updater = rlu.make_loss(cfg, agent)
+    logging.info("Loss created")
 
     # Optimizers
 
     optimizers = rlu.make_optimizers(cfg, agent, loss_module)
+    logging.info("Optimizers created")
 
     # Collector and ReplayBuffer
     
     collector, replay_buffer = rlu.make_collector_rb(cfg, env, agent)
+    logging.info("Collector and Replay Buffer created")
 
     # Training
 
@@ -145,33 +105,14 @@ def main(cfg: DictConfig):
                 # Compute the loss
                 loss_td = loss_module(sampled_td)
 
-                # TODO: change this to be policy agnostic
-                # How: make the optimizers a dct with "actor", "qvalue", "alpha"
-                # pass the loss_td and search for the keys "loss_"+key in optim
+                # Update Networks
 
-                loss_actor = loss_td["loss_actor"]
-                loss_critic = loss_td["loss_qvalue"]
-                loss_alpha = loss_td["loss_alpha"]
+                detached_losses = rlu.step_optimizers(optimizers, loss_td)
 
+                losses[j] = detached_losses
 
-                # Update Actor
-                optimizer_actor.zero_grad()
-                loss_actor.backward()
-                optimizer_actor.step()
-
-                # Update Critic
-                optimizer_critic.zero_grad()
-                loss_critic.backward()
-                optimizer_critic.step()
-
-                # Update Alpha
-                optimizer_alpha.zero_grad()
-                loss_alpha.backward()
-                optimizer_alpha.step()
-
-                losses[j] = loss_td.select("loss_actor", "loss_qvalue", "loss_alpha").detach()
-
-                target_net_updater.step() # Polyak update
+                if target_net_updater is not None:            
+                    target_net_updater.step() # Polyak update
 
         traning_time = time.time() - training_start_time
 
@@ -186,7 +127,7 @@ def main(cfg: DictConfig):
 
         if len(episode_rewards) > 0:
             metrics_to_log["train/reward"] = episode_rewards.mean().item()
-            if TO_TRANSFORM:
+            if ("next", "step_count") in td and ("next", "episode_reward") in td:
                 episode_length = td["next", "step_count"][episode_end]
                 metrics_to_log["train/episode_reward"] = td["next", "episode_reward"].mean().item()
                 metrics_to_log["train/episode_length"] = episode_length.sum().item()/len(episode_length)
@@ -201,8 +142,6 @@ def main(cfg: DictConfig):
             metrics_to_log["train/training_time"] = traning_time
             metrics_to_log["train/sampling_time"] = sample_time/collector.frames_per_batch
 
-        
-
         # Evaluation
         # Notice that for now we're evauating using the same environment used for training,
         # not ideal, to be changed
@@ -212,7 +151,7 @@ def main(cfg: DictConfig):
                 eval_start = time.time()
 
                 eval_rollout = env.rollout(
-                    1000, policy_module, 
+                    1000, agent, 
                     auto_cast_to_device=True, 
                     break_when_any_done=True
                 )
@@ -227,13 +166,29 @@ def main(cfg: DictConfig):
         if logger is not None:
             for metric_name, metric_value in metrics_to_log.items():
                 logger.log_scalar(metric_name, metric_value, collected_frames)
+
+    
+    collector.shutdown()
+    # Add this back in when making eval env
+    #if not eval_env.is_closed:
+    #    eval_env.close()
+    if not env.is_closed:
+        env.close()
+    end_time = time.time()
+    execution_time = end_time - collection_start
+    logging.info(f"Training took {execution_time:.2f} seconds to finish")
     
     # Save the model
-
-    torch.save(ac_module.state_dict(), config['model_path'])
-
-
+    
+    if cfg.save_models:
+        rlu.save_model(
+            cfg,
+            cfg.save_dir,
+            logger,
+            loss_module,
+            optimizers
+        )
 
 if __name__ == "__main__":
-    bbrl_utils.register_script_resolvers()
+    rlu.register_script_resolvers()
     main()

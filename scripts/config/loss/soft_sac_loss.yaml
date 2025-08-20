@@ -1,7 +1,8 @@
+_convert_: partial
 module:
   _target_: torchrl.objectives.SACLoss
-  actor_network: ${agent_policy_operator} # custom resolver
-  qvalue_network: ${agent_critic_operator} # custom resolver
+  actor_network: ${agent_policy_operator:} # custom resolver
+  qvalue_network: ${agent_critic_operator:} # custom resolver
 
 value_estimator:
   gamma: 0.99

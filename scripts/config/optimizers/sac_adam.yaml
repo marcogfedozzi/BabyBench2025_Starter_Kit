@@ -1,11 +1,18 @@
+# NOTE: the naming convention is important for proper update of the optimizers!
+
+# It should follow the convention:
+# optimizer_<lossname>
+# where lossname is(are) the name of the item(s) generated from the loss module chosen, minus the "loss_" prefix.
+# For SACLoss the losses are: loss_actor, loss_qvalue, loss_alpha -> actor, qvalue, alpha -> optimizer_actor, ...
+
 optimizer_actor:
   _target_: torch.optim.Adam
-  params: ${agent_policy_parameters} # custom resolver
+  params: ${agent_policy_parameters:} # custom resolver
 
-optimizer_critic:
+optimizer_qvalue:
   _target_: torch.optim.Adam
-  params: ${agent_critic_parameters} # custom resolver
+  params: ${agent_critic_parameters:} # custom resolver
 
 optimizer_alpha:
   _target_: torch.optim.Adam
-  params: ${loss_log_alpha} # custom resolver
+  params: ${loss_log_alpha:} # custom resolver

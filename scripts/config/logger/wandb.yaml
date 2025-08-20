@@ -4,7 +4,6 @@ model_name: null
 experiment_name: null
 
 wandb_kwargs:
-  _convert_: partial
   mode: online
   project: babybench
   group: null

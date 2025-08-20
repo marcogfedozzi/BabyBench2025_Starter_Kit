@@ -5,18 +5,23 @@ import torchrl.envs.transforms as T
 from omegaconf import DictConfig, open_dict
 from typing import List, Dict, Optional
 import logging
-import torch
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from typing import Type, Tuple
 
+
 from torchrl.envs import TransformedEnv
 from torchrl.objectives import LossModule, TargetNetUpdater
+from torchrl.envs.utils import ExplorationType, set_exploration_type
 from torchrl.envs.libs.gym import GymEnv, GymWrapper
 from torchrl.record.loggers.utils import get_logger, generate_exp_name
 from typing import Any
 from babybench import utils as bb_utils
 from torchrl.record.loggers.common import Logger
+import os
+
+
+from torchrl.collectors import SyncDataCollector
 
 
 def _check_key(cfg: DictConfig, key: str):
@@ -91,10 +96,11 @@ def register_script_resolvers():
 	Register custom resolvers for the script.
 	"""
 
-	OmegaConf.register_resolver("get_device", lambda: torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+	OmegaConf.register_new_resolver("get_device", lambda: torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+	OmegaConf.register_new_resolver("type",  lambda x: hydra.utils.get_object(x))
+	OmegaConf.register_new_resolver("cls",   lambda x: hydra.utils.get_class(x))
 
-
-def make_env(cfg: OmegaConf, bbench_config: Any):
+def make_env(cfg: OmegaConf, bbench_config: Any) -> GymEnv:
 
 	reward_wrapper = hydra.utils.instantiate(cfg.reward, _partial_=True)
 
@@ -113,6 +119,8 @@ def make_env(cfg: OmegaConf, bbench_config: Any):
 	if _check_key(cfg, "seed"):
 		env.set_seed(cfg.seed)
 
+	register_env_resolvers(env)
+
 	return env
 
 
@@ -123,10 +131,10 @@ def register_env_resolvers(env: TransformedEnv) -> None:
 	:param env: The environment to register resolvers for.
 	"""
 
-	OmegaConf.register_resolver("env_obs_shape", lambda key: env.observation_spec[key].shape)
-	OmegaConf.register_resolver("env_act_shape", lambda key: env.action_spec.shape)
-	OmegaConf.register_resolver("env_act_space_low", lambda key: env.action_spec.space.low)
-	OmegaConf.register_resolver("env_act_space_high", lambda key: env.action_spec.space.high)
+	OmegaConf.register_new_resolver("env_obs_shape", lambda key: env.observation_spec[key].shape[-1], replace=True)
+	OmegaConf.register_new_resolver("env_act_shape", lambda k: env.action_spec.shape[-1]*k, replace=True)
+	OmegaConf.register_new_resolver("env_act_space_low", lambda: env.action_spec.space.low, replace=True)
+	OmegaConf.register_new_resolver("env_act_space_high", lambda: env.action_spec.space.high, replace=True)
 
 def register_agent_resolvers(agent: TensorDictModule) -> None:
 	"""
@@ -135,27 +143,28 @@ def register_agent_resolvers(agent: TensorDictModule) -> None:
 	:param env: The agent to register resolvers for.
 	"""
 
-	OmegaConf.register_resolver("agent_policy_operator", lambda: agent.get_policy_operator())
-	OmegaConf.register_resolver("agent_critic_operator", lambda: agent.get_critic_operator())
+	OmegaConf.register_new_resolver("agent_policy_operator", lambda: agent.get_policy_operator(), replace=True)
+	OmegaConf.register_new_resolver("agent_critic_operator", lambda: agent.get_critic_operator(), replace=True)
 
-def make_agent(cfg: DictConfig, env: TransformedEnv) -> TensorDictModule:
+def make_agent(cfg: DictConfig, env: GymEnv) -> TensorDictModule:
 	"""
 	"""
-
-	register_env_resolvers(env)
 
 	ac_module = hydra.utils.instantiate(cfg.module)
 
-	"""	
+	register_agent_resolvers(ac_module)
+
 	# Initialize the lazy modules
 	with torch.no_grad(), set_exploration_type(ExplorationType.RANDOM):
-        td = env.fake_tensordict()
-        td = td.to(device)
-        for net in agent:
-            net(td)
-	"""
+		td = env.fake_tensordict()
+		ac_module(td)
 	
 	return ac_module
+
+def register_loss_resolvers(module: TensorDict, loss_module: LossModule):
+	OmegaConf.register_new_resolver("loss_log_alpha", lambda: loss_module.log_alpha, replace=True)
+	OmegaConf.register_new_resolver("agent_policy_parameters", lambda: module.get_policy_operator().parameters(), replace=True)
+	OmegaConf.register_new_resolver("agent_critic_parameters", lambda: module.get_critic_operator().parameters(), replace=True)
 
 def make_loss(cfg: DictConfig, module: TensorDictModule) -> Tuple[LossModule, Optional[TargetNetUpdater]]:
 	"""
@@ -166,37 +175,41 @@ def make_loss(cfg: DictConfig, module: TensorDictModule) -> Tuple[LossModule, Op
 	:return: An instance of the loss function and an optional instance of the target net updater, if required.
 	"""
 
-	register_agent_resolvers(module)
 	loss_module: LossModule = hydra.utils.instantiate(cfg.loss.module)
 
-	loss_module.make_value_estimator(cfg.loss.value_estimator)
+	loss_module.make_value_estimator(**cfg.loss.value_estimator)
 
 	target_net_updater = None
 	if _check_key(cfg.loss, "target_net_updater"):
 		target_net_updater: TargetNetUpdater = hydra.utils.instantiate(cfg.loss.target_net_updater, loss_module=loss_module)
 
+	register_loss_resolvers(module, loss_module)
 
 	return loss_module, target_net_updater
 
-def register_loss_resolvers(module: TensorDict, loss_module: LossModule):
-	OmegaConf.register_resolver("loss_log_alpha", lambda: loss_module.log_alpha)
-	OmegaConf.register_resolver("agent_policy_parameters", lambda: module.get_policy_operator().parameters())
-	OmegaConf.register_resolver("agent_critic_parameters", lambda: module.get_critic_operator().parameters())
+def make_optimizers(cfg: DictConfig, module: TensorDict, loss_module: LossModule) -> Dict[str, torch.optim.Optimizer]:
 
-def make_optimizers(cfg: DictConfig, module: TensorDict, loss_module: LossModule) -> List[torch.optim.Optimizer]:
+	optim = {}
 
-	register_loss_resolvers(cfg, module, loss_module)
-
-	optim = []
-
-	for optimizer in cfg.optimizers:
-		optim.append(hydra.utils.instantiate(optim))
+	for name, optimizer in cfg.optimizers.items():
+		optim[name] = hydra.utils.instantiate(optim)
 
 	return optim
 
 def make_collector_rb(cfg: DictConfig, env: GymEnv, agent: TensorDictModule):
 
-	collector = hydra.utils.instantiate(cfg.collector, create_env_fn=env, policy=agent)
+	#collector = hydra.utils.instantiate(cfg.collector, create_env_fn=env, policy=agent)
+
+	collector = SyncDataCollector(
+		create_env_fn = env,
+		policy = agent,
+		frames_per_batch = 16,
+		total_frames = 5_000,  # 1_000_000
+		init_random_frames = 100,
+		env_device = 'cpu',
+		storing_device = 'cpu',
+		policy_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+	)
 
 	replay_buffer = hydra.utils.instantiate(cfg.replay_buffer, 
 		transform=lambda data: data.to(agent.device, non_blocking=True) if data.device != agent.device else data.clone()
@@ -219,3 +232,51 @@ def make_logger(cfg: DictConfig) -> Logger:
 										 experiment_name=cfg.logger.experiment_name
 									 ),
 									 **kwargs)
+
+def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: TensorDict) -> TensorDict:
+	"""
+	Backward steps through the losses for which an optimizer is specified.
+
+	Returns a *detached* TensorDict with only the paired losses selected.
+	
+	Note that the key of the optimizers
+	is important to determine the correct pairing with the loss tensor.
+	It should follow the convention:
+	optimizer_<lossname>
+	where lossname is(are) the name of the item(s) generated from the loss module chosen, minus the "loss_" prefix.
+	For SACLoss the losses are: loss_actor, loss_qvalue, loss_alpha -> actor, qvalue, alpha -> optimizer_actor, ...
+	"""
+
+	lossnames_l = []
+
+	for optim_name, optim in optimizers.items():
+		loss_name = optim_name.replace("optimizer", "loss")
+
+		if not loss_name in losses:
+			logging.warning(f"Loss item {loss_name} not found. Available entries are {losses.keys()}.")
+			continue
+
+		lossnames_l.append(loss_name)
+			
+		loss: torch.Tensor = losses[loss_name]
+		optim.zero_grad()
+		loss.backward()
+		optim.step()
+	
+	return losses.select(*lossnames_l).detach()
+
+def save_model(cfg: DictConfig, save_dir: str, logger: Logger, loss_module: LossModule, optimizers: Dict[str, torch.optim.Optimizer]):
+	run_name = logger.experiment.name
+	run_id  = logger.experiment.id
+	dir_name = os.path.join(save_dir, "run_"+str(run_id))
+	os.makedirs(dir_name, exist_ok=True)
+	logging.info(f"Saving the models of the run in {dir_name}")
+
+	#torch.save(policy_module.state_dict(), os.path.join(dir_name, "policy_module.pth"))
+	#torch.save(qvalue_module.state_dict(), os.path.join(dir_name, "qvalue_module.pth"))
+	torch.save(loss_module.state_dict(), os.path.join(dir_name, "loss_module.pth"))
+	for optim_name, optim in optimizers.items():
+			torch.save(optim.state_dict(), os.path.join(dir_name, f"{optim_name}.pth"))
+
+	with open(os.path.join(dir_name, "config.yaml"), "w") as f:
+			OmegaConf.save(cfg, f)

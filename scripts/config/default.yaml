@@ -1,29 +1,20 @@
 defaults:
-- _self_
-- tranforms@env.transforms: default
+- transforms@env.transforms: default
 - logger: wandb
 - reward: touch
 - module: sac
 - loss: soft_sac_loss
+- optimizers: sac_adam
 - collector: sync
-- reaply_buffer: default
+- replay_buffer: default
+- _self_
 
 seed: 42
 
-device: ${get_device} # custom resolver
-
-reward: null
-
-env:
-  transforms: null
+device: ${get_device:} # custom resolver
+save_models: true
+save_dir: ${hydra:runtime.cwd}/models
 
 logger:
   model_name: SAC
   experiment_name: touch
-
-module:
-  device: ${device}
-
-collector: null
-
-replay_buffer: null
