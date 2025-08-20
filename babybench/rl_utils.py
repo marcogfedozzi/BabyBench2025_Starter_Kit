@@ -162,7 +162,7 @@ def make_agent(cfg: DictConfig, env: GymEnv) -> TensorDictModule:
 	return ac_module
 
 def register_loss_resolvers(module: TensorDict, loss_module: LossModule):
-	OmegaConf.register_new_resolver("loss_log_alpha", lambda: loss_module.log_alpha, replace=True)
+	OmegaConf.register_new_resolver("loss_log_alpha", lambda: [loss_module.log_alpha], replace=True)
 	OmegaConf.register_new_resolver("agent_policy_parameters", lambda: module.get_policy_operator().parameters(), replace=True)
 	OmegaConf.register_new_resolver("agent_critic_parameters", lambda: module.get_critic_operator().parameters(), replace=True)
 
@@ -192,24 +192,13 @@ def make_optimizers(cfg: DictConfig, module: TensorDict, loss_module: LossModule
 	optim = {}
 
 	for name, optimizer in cfg.optimizers.items():
-		optim[name] = hydra.utils.instantiate(optim)
+		optim[name] = hydra.utils.instantiate(optimizer)
 
 	return optim
 
 def make_collector_rb(cfg: DictConfig, env: GymEnv, agent: TensorDictModule):
 
-	#collector = hydra.utils.instantiate(cfg.collector, create_env_fn=env, policy=agent)
-
-	collector = SyncDataCollector(
-		create_env_fn = env,
-		policy = agent,
-		frames_per_batch = 16,
-		total_frames = 5_000,  # 1_000_000
-		init_random_frames = 100,
-		env_device = 'cpu',
-		storing_device = 'cpu',
-		policy_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	)
+	collector = hydra.utils.instantiate(cfg.collector, create_env_fn=env, policy=agent)
 
 	replay_buffer = hydra.utils.instantiate(cfg.replay_buffer, 
 		transform=lambda data: data.to(agent.device, non_blocking=True) if data.device != agent.device else data.clone()

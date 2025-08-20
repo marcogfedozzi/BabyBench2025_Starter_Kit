@@ -18,3 +18,6 @@ save_dir: ${hydra:runtime.cwd}/models
 logger:
   model_name: SAC
   experiment_name: touch
+
+collector:
+  total_frames: 1_000

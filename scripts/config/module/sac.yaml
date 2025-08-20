@@ -60,4 +60,3 @@ value_operator:
     device: null
   
   in_keys: [hidden, action]
-  out_keys: value

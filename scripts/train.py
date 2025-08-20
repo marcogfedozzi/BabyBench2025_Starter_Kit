@@ -100,6 +100,8 @@ def main(cfg: DictConfig):
             for j in range(collector.frames_per_batch):
                 # Sample from the replay buffer
                 sampled_td = replay_buffer.sample()
+                # print(sampled_td["next", "reward"])
+                # print(sampled_td["action"])
                 sample_time += time.time() - sample_start
 
                 # Compute the loss

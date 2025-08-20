@@ -3,6 +3,9 @@ sac_mimo_logging
 mimo_logging
 outputs
 
+# Results
+models
+
 # BabyBench files and directories
 results/*
 !results/__init__.py

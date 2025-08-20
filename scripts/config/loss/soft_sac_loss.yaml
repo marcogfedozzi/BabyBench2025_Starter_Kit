@@ -3,6 +3,10 @@ module:
   _target_: torchrl.objectives.SACLoss
   actor_network: ${agent_policy_operator:} # custom resolver
   qvalue_network: ${agent_critic_operator:} # custom resolver
+  num_qvalue_nets: 2
+  loss_function: smooth_l1
+  delay_actor: false
+  delay_qvalue: true
 
 value_estimator:
   gamma: 0.99
