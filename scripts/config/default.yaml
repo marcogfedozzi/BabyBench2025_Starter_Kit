@@ -1,23 +1,36 @@
 defaults:
-- transforms@env.transforms: default
+- transform@env.transform: default
 - logger: wandb
 - reward: touch
 - module: sac
 - loss: soft_sac_loss
 - optimizers: sac_adam
-- collector: sync
+- collector: multiasync
 - replay_buffer: default
 - _self_
 
 seed: 42
+eval_iter: null #1000
+obs_modality: touch
+train_steps: 5_000
+init_rand_frames: 1_000
+
+env:
+  num_envs: 4
+  init_stats_iter: 1000
 
 device: ${get_device:} # custom resolver
-save_models: true
+save_models: false
 save_dir: ${hydra:runtime.cwd}/models
 
 logger:
   model_name: SAC
   experiment_name: touch
 
+replay_buffer:
+  shared: true
+  prefetch: null
+  batch_size: 1024
+
 collector:
-  total_frames: 1_000
+  frames_per_batch: 16

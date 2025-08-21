@@ -8,8 +8,10 @@ import logging
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from typing import Type, Tuple
+from functools import partial
 
-
+from torchrl.collectors import DataCollectorBase
+from torchrl.data.replay_buffers import ReplayBuffer
 from torchrl.envs import TransformedEnv
 from torchrl.objectives import LossModule, TargetNetUpdater
 from torchrl.envs.utils import ExplorationType, set_exploration_type
@@ -57,6 +59,9 @@ def instantiate_transforms(transform_cfg: DictConfig) -> T.Compose:
 	:param transform_cfg: A DictConfig object containing transform configurations.
 	:return: A list of instantiated transforms.
 	"""
+
+	logging.info(f"Instantiating Transforms: {transform_cfg.keys()}")
+
 	transforms: List[T.Transform] = []
 
 	if not transform_cfg:
@@ -72,6 +77,7 @@ def instantiate_transforms(transform_cfg: DictConfig) -> T.Compose:
 
 				logging.info(f"Instantiating transform <{cb_conf._target_}>")
 
+				"""Unnecessary right now
 				if "ObservationNorm" in cb_conf._target_ and (cb_conf.get("loc") is None or cb_conf.get("scale") is None):
 					
 					logging.warning("ObservationNorm with None loc and/or scale detected. Setting them to 0 and 1 for now, call 'init_transforms' to properly initialize them later")
@@ -79,17 +85,19 @@ def instantiate_transforms(transform_cfg: DictConfig) -> T.Compose:
 					with open_dict(cb_conf):
 						cb_conf.loc = 0
 						cb_conf.scale = 1
+				"""
 				
 				transforms.append(hydra.utils.instantiate(cb_conf))
 
 	return T.Compose(*transforms)
 
 def init_stats(env: TransformedEnv, num_iter: int = 1000):
+	"""Init stats"""
 	
 	for trsf in env.transform:
 		if isinstance(trsf, T.ObservationNorm):
 			logging.info(f"Initializing transform {trsf} with {num_iter} iterations")
-			trsf.init_stats(env, num_iter=num_iter)
+			trsf.init_stats(num_iter=num_iter)
 
 def register_script_resolvers():
 	"""
@@ -100,24 +108,34 @@ def register_script_resolvers():
 	OmegaConf.register_new_resolver("type",  lambda x: hydra.utils.get_object(x))
 	OmegaConf.register_new_resolver("cls",   lambda x: hydra.utils.get_class(x))
 
-def make_env(cfg: OmegaConf, bbench_config: Any) -> GymEnv:
+def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0) -> GymEnv:
+
+	# TODO: add the possibility to specify loc and scale as a list of values, 
+	# and instead of init_stats assign them directly to ObsNorm after computing the
+	# mean of each one (in case of multiple training env and a single eval env)
 
 	reward_wrapper = hydra.utils.instantiate(cfg.reward, _partial_=True)
 
 	env = reward_wrapper(bb_utils.make_env(bbench_config, training=True))
 
-	if _check_key(cfg.env, "transform"):
-		transforms = instantiate_transforms(cfg.env.transforms)
+	_trsf = cfg.env.get("transform", None)
+	if _trsf is not None:
+		transforms = instantiate_transforms(_trsf)
 
 		env = TransformedEnv(
                 GymWrapper(env),
                 transform=transforms
         )
 	else:
-			env = GymWrapper(env)
+		env = GymWrapper(env)
 
-	if _check_key(cfg, "seed"):
-		env.set_seed(cfg.seed)
+
+	_seed = cfg.get("seed", -1)
+	if _seed > 0:
+		env.set_seed(cfg.seed + seed_mod)
+
+	if isinstance(env, TransformedEnv):
+		init_stats(env, num_iter=cfg.env.init_stats_iter)
 
 	register_env_resolvers(env)
 
@@ -179,15 +197,17 @@ def make_loss(cfg: DictConfig, module: TensorDictModule) -> Tuple[LossModule, Op
 
 	loss_module.make_value_estimator(**cfg.loss.value_estimator)
 
-	target_net_updater = None
-	if _check_key(cfg.loss, "target_net_updater"):
+	loss_module.set_vmap_randomness("same")
+
+	target_net_updater = cfg.loss.get("target_net_updater", None)
+	if target_net_updater is not None:
 		target_net_updater: TargetNetUpdater = hydra.utils.instantiate(cfg.loss.target_net_updater, loss_module=loss_module)
 
 	register_loss_resolvers(module, loss_module)
 
 	return loss_module, target_net_updater
 
-def make_optimizers(cfg: DictConfig, module: TensorDict, loss_module: LossModule) -> Dict[str, torch.optim.Optimizer]:
+def make_optimizers(cfg: DictConfig) -> Dict[str, torch.optim.Optimizer]:
 
 	optim = {}
 
@@ -196,13 +216,43 @@ def make_optimizers(cfg: DictConfig, module: TensorDict, loss_module: LossModule
 
 	return optim
 
-def make_collector_rb(cfg: DictConfig, env: GymEnv, agent: TensorDictModule):
+def _to_device_transform(data: TensorDict, device):
+	return data.to(device, non_blocking=True) if data.device != device else data.clone()
 
-	collector = hydra.utils.instantiate(cfg.collector, create_env_fn=env, policy=agent)
+def _rand_init_replay_buffer(env: GymEnv, replay_buffer: ReplayBuffer, rand_steps: int):
+	"""
+	Insert random rollout if necessary to warm up later training.
+	"""
 
-	replay_buffer = hydra.utils.instantiate(cfg.replay_buffer, 
-		transform=lambda data: data.to(agent.device, non_blocking=True) if data.device != agent.device else data.clone()
-	)
+	replay_buffer.extend(env.rollout(rand_steps))
+
+def make_collector_rb(cfg: DictConfig, env: GymEnv, agent: TensorDictModule, bbench_config: Any = None) -> Tuple[DataCollectorBase, ReplayBuffer]:
+
+	_tdtr = partial(_to_device_transform, device=agent.device)
+	replay_buffer = hydra.utils.instantiate(cfg.replay_buffer, transform=_tdtr)
+
+	_irf = cfg.get("init_rand_frames", 0)
+	if _irf > 0:
+		logging.info(f"Warming up Replay Buffer with {_irf} frames")
+		
+		_rand_init_replay_buffer(env, replay_buffer, _irf)
+	# Check if the collector expects a list of env-generator functions
+	collector_type = cfg.collector._target_.split('.')[-1]
+	if "Multi" in collector_type:
+		num_envs = cfg.env.num_envs
+		env = []
+
+		# If more envs are expected generate them
+		assert bbench_config is not None, \
+			f"Expected bbench config file to generate multiple copies of the environment, as the Collector is of type: {collector_type}"
+	
+		for i in range(num_envs):
+			env.append(partial(make_env, cfg=cfg, bbench_config=bbench_config, seed_mod=i))
+
+	# Random Warm Up
+
+
+	collector = hydra.utils.instantiate(cfg.collector, create_env_fn=env, policy=agent, replay_buffer=replay_buffer)
 
 	return collector, replay_buffer
 
@@ -211,8 +261,9 @@ def make_logger(cfg: DictConfig) -> Logger:
 	Create the logger
 	"""
 	
-	if _check_key(cfg.logger, "wandb_kwargs"):
-		kwargs = {"wandb_kwargs": cfg.logger.wandb_kwargs}
+	wandb_kwargs = cfg.logger.get("wandb_kwargs", {})
+	if wandb_kwargs:
+		kwargs = {"wandb_kwargs": wandb_kwargs}
 
 	return get_logger(logger_type=cfg.logger.logger_type,
 									 logger_name=cfg.logger.logger_name,
@@ -253,6 +304,8 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 		optim.step()
 	
 	return losses.select(*lossnames_l).detach()
+
+
 
 def save_model(cfg: DictConfig, save_dir: str, logger: Logger, loss_module: LossModule, optimizers: Dict[str, torch.optim.Optimizer]):
 	run_name = logger.experiment.name

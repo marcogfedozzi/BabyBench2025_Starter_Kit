@@ -1,7 +1,8 @@
-_target_: torchrl.collectors.SyncDataCollector
+_target_: torchrl.collectors.aSyncDataCollector
 
 create_env_fn: null
 policy: null
+extend_buffer: true
 frames_per_batch: 16
 total_frames: -1
 init_random_frames: 100

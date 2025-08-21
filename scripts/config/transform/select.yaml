@@ -3,4 +3,4 @@ select_transform:
   _convert_: partial
 
   _args_: 
-    - touch
+    - ${obs_modality}

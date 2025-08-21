@@ -1,6 +1,7 @@
 observation_norm:
   _target_: torchrl.envs.transforms.ObservationNorm
   _convert_: partial
+  in_keys: ${obs_modality}
 
   loc: null
   scale: null
