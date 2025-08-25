@@ -5,7 +5,7 @@ pin_memory: False
 prefetch: null
 storage:
   _target_: torchrl.data.replay_buffers.storages.LazyTensorStorage
-  max_size: 5_000  # buffer size
+  max_size: 50_000  # buffer size
 sampler:
   _target_: torchrl.data.replay_buffers.samplers.SamplerWithoutReplacement
   

@@ -2,6 +2,7 @@
 sac_mimo_logging
 mimo_logging
 outputs
+nohup.out
 
 # Results
 models

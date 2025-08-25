@@ -12,7 +12,7 @@ from omegaconf import DictConfig
 
 
 
-@hydra.main(version_base="1.3.2", config_path="./config", config_name="default")
+@hydra.main(version_base="1.3.2", config_path="./config", config_name="test") # default
 def main(cfg: DictConfig):
 
     # Seeding and config loading
@@ -163,14 +163,6 @@ def main(cfg: DictConfig):
                 logger.log_scalar(metric_name, metric_value, collected_frames)
     
     logging.info("--- Training completed ---")
-    logging.info("Shutting down")
-
-    collector.async_shutdown()
-    # Add this back in when making eval env
-    #if not eval_env.is_closed:
-    #    eval_env.close()
-    if not env.is_closed:
-        env.close()
     end_time = time.time()
     execution_time = end_time - collection_start
     logging.info(f"Training took {execution_time:.2f} seconds to finish")
@@ -186,6 +178,18 @@ def main(cfg: DictConfig):
             optimizers
         )
 
+    logging.info("Shutting down")
+
+    try:
+        collector.async_shutdown()
+    except RuntimeError as e:
+        logging.warning(f"Collector shutdown failed with {e}: skipping")
+    # Add this back in when making eval env
+    #if not eval_env.is_closed:
+    #    eval_env.close()
+    if not env.is_closed:
+        env.close()
+    
 if __name__ == "__main__":
     rlu.register_script_resolvers()
     main()

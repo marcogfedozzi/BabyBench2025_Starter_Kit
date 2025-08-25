@@ -12,15 +12,15 @@ defaults:
 seed: 42
 eval_iter: null #1000
 obs_modality: touch
-train_steps: 5_000
+train_steps: 500_000
 init_rand_frames: 1_000
 
 env:
   num_envs: 4
-  init_stats_iter: 1000
+  init_stats_iter: 5_000
 
 device: ${get_device:} # custom resolver
-save_models: false
+save_models: true
 save_dir: ${hydra:runtime.cwd}/models
 
 logger:
