@@ -36,25 +36,18 @@ def main(cfg: DictConfig):
     env = rlu.make_env(cfg, train_config)
     logging.info("Env created")
 
-    print(env.observation_spec["touch"].shape)
-
     # Eval Env
 
     eval_every = None
     eval_for = None
     if cfg.eval.get("is_on", False):
 
-        time.sleep(10)
-        
         logging.info("Making Eval env")
-        eval_env = rlu.make_env(cfg, train_config, is_eval=False)
+        eval_env = rlu.make_env(cfg, train_config, is_eval=True)
         logging.info("Eval env created")
 
         eval_every = cfg.eval.get("every", None)
         eval_for = cfg.eval.get("for", None)
-
-        print(eval_env.observation_spec["touch"].shape)
-
 
     # Module
 
@@ -120,14 +113,11 @@ def main(cfg: DictConfig):
         collected_obs += collected_frames
         training_start_time = time.time()
 
-        sample_start = time.time()
-        sample_time = 0
 
         # Sample from the replay buffer
         td = replay_buffer.sample()
         td = predictor(td) # extra computation for intrinsic reward or else
 
-        sample_time += time.time() - sample_start
 
         rlu.log_info_keys(cfg, td, metrics_to_log)
 

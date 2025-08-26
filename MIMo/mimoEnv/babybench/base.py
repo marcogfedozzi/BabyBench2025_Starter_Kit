@@ -10,6 +10,7 @@ from mimoEnv.envs.mimo_env import MIMoEnv, SCENE_DIRECTORY
 from mimoActuation.actuation import SpringDamperModel, PositionalModel
 from mimoActuation.muscle import MuscleModel
 import mimoEnv.utils as env_utils
+from copy import deepcopy
 
 
 SCENE_XML = os.path.join(SCENE_DIRECTORY, "babybench.xml")
@@ -247,19 +248,29 @@ class BabyBenchEnv(MIMoEnv):
                 if config['vestibular_active'] is False:
                     vestibular_params = None
             if config['touch_active'] is not None:
-                if (config['touch_active'] is False) or (config['touch_scale']==0):
+                if (config['touch_active'] is False) or (config['touch_scale'] == 0):
                     touch_params = None
                 else:
-                    if config['touch_scale'] is not None:
-                        for body in touch_params["scales"].copy():
-                            if config[f"touch_{BODY_GROUPS[body]}"] is True:
-                                touch_params["scales"][body] = TOUCH_PARAMS["scales"][body]*config['touch_scale']
-                            else:
-                                touch_params["scales"].pop(body, None)
-                    if config['touch_function'] is not None:
-                        touch_params["touch_function"] = config['touch_function']
-                    if config['touch_response'] is not None:
-                        touch_params["response_function"] = config['touch_response']
+                    # Build a per-instance touch_params copy and compute scales from the
+                    # immutable module-level TOUCH_PARAMS to avoid mutating shared state.
+                    base_touch = deepcopy(TOUCH_PARAMS)
+                    # Start from a copy of the incoming touch_params if provided, else from base
+                    tp = deepcopy(touch_params) if touch_params is not None else deepcopy(base_touch)
+
+                    if config.get('touch_scale') is not None:
+                        new_scales = {}
+                        for body in base_touch["scales"].keys():
+                            # Only include body groups enabled in the config
+                            if config.get(f"touch_{BODY_GROUPS.get(body, body)}") is True:
+                                new_scales[body] = base_touch["scales"][body] * config['touch_scale']
+                        tp["scales"] = new_scales
+
+                    if config.get('touch_function') is not None:
+                        tp["touch_function"] = config['touch_function']
+                    if config.get('touch_response') is not None:
+                        tp["response_function"] = config['touch_response']
+
+                    touch_params = tp
             if config['actuation_model'] is not None:
                 actuation_model = ACTUATION_MODELS[config['actuation_model']]
             
