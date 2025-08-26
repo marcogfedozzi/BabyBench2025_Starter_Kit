@@ -5,7 +5,7 @@ common_operator:
   _target_: tensordict.nn.TensorDictModule
   module:
     _target_: torchrl.modules.MLP
-    in_features: ${env_obs_shape:${obs_modality}} # custom resolver
+    #in_features: ${env_obs_shape:${obs_modality}} # custom resolver
     out_features: 1024
     num_cells: [64, 64]
     activation_class: ${cls:torch.nn.ReLU} # custom resolver

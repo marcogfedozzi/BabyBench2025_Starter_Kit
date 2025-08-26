@@ -7,17 +7,25 @@ defaults:
 - optimizers: sac_adam
 - collector: multiasync
 - replay_buffer: default
+- predictor: none
 - _self_
 
 seed: 42
-eval_iter: null #1000
 obs_modality: touch
 train_steps: 500_000
 init_rand_frames: 1_000
 
+eval:
+  seed: 0
+  on: false
+  every: 1_000
+  for: 1_000
+
 env:
+  seed: ${seed}
   num_envs: 4
   init_stats_iter: 5_000
+  info_keys: null
 
 device: ${get_device:} # custom resolver
 save_models: true

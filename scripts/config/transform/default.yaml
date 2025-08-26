@@ -1,5 +1,5 @@
 defaults:
  # - observation_norm
-  - select
+ # - select
   - step_counter
   - reward_sum

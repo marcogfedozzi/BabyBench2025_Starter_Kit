@@ -12,7 +12,7 @@ from omegaconf import DictConfig
 
 
 
-@hydra.main(version_base="1.3.2", config_path="./config", config_name="test") # default
+@hydra.main(version_base="1.3.2", config_path="./config", config_name="default") # default
 def main(cfg: DictConfig):
 
     # Seeding and config loading
@@ -22,7 +22,7 @@ def main(cfg: DictConfig):
 
     logging.info(f"Using device: {device}")
 
-    with open('examples/config_training.yml') as f:
+    with open('examples/config_selftouch_simple.yml') as f:
         train_config = yaml.safe_load(f)
 
     # Logger
@@ -36,10 +36,34 @@ def main(cfg: DictConfig):
     env = rlu.make_env(cfg, train_config)
     logging.info("Env created")
 
+    print(env.observation_spec["touch"].shape)
+
+    # Eval Env
+
+    eval_every = None
+    eval_for = None
+    if cfg.eval.get("is_on", False):
+
+        time.sleep(10)
+        
+        logging.info("Making Eval env")
+        eval_env = rlu.make_env(cfg, train_config, is_eval=False)
+        logging.info("Eval env created")
+
+        eval_every = cfg.eval.get("every", None)
+        eval_for = cfg.eval.get("for", None)
+
+        print(eval_env.observation_spec["touch"].shape)
+
+
     # Module
 
     agent = rlu.make_agent(cfg, env)
     logging.info("Agent created")
+
+    # Predictor
+
+    predictor = rlu.make_predictor(cfg)
 
     # Loss
 
@@ -61,7 +85,6 @@ def main(cfg: DictConfig):
     pbar = tqdm(total=collector.total_frames)
 
     collected_obs = 0
-    eval_iter = cfg.eval_iter
     prec_wc = 0
     
     def update_write_count(replay_buffer, prec_wc):
@@ -74,6 +97,10 @@ def main(cfg: DictConfig):
     collection_start = time.time()
     
     collector.start()
+
+    if cfg.init_rand_frames <= 0:
+        logging.info("Warming up the replay buffer")
+        time.sleep(10)
     
     logging.info("--- Training starting ---")
 
@@ -98,7 +125,11 @@ def main(cfg: DictConfig):
 
         # Sample from the replay buffer
         td = replay_buffer.sample()
+        td = predictor(td) # extra computation for intrinsic reward or else
+
         sample_time += time.time() - sample_start
+
+        rlu.log_info_keys(cfg, td, metrics_to_log)
 
         # Compute the loss
         loss_td = loss_module(td)
@@ -116,10 +147,14 @@ def main(cfg: DictConfig):
 
         episode_rewards = td["next", "reward"][episode_end]
 
+        # log the norm of the action vector, averaged across the batch dim
+        metrics_to_log["info/action_magnitude"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
+
         # Logging
 
         if len(episode_rewards) > 0:
-            metrics_to_log["train/reward"] = episode_rewards.mean().item()
+            metrics_to_log["train/reward"] = td["next", "reward"].mean().item()
+            #metrics_to_log["train/reward"] = episode_rewards.mean().item()
             if ("next", "step_count") in td and ("next", "episode_reward") in td:
                 episode_length = td["next", "step_count"][episode_end]
                 metrics_to_log["train/episode_reward"] = td["next", "episode_reward"].mean().item()
@@ -135,20 +170,18 @@ def main(cfg: DictConfig):
         # Notice that for now we're evauating using the same environment used for training,
         # not ideal, to be changed
         
-        if eval_iter is not None and collected_frames % eval_iter == 0:
-            logging.info("Evaluation")
+        if eval_every is not None and train_step % eval_every == 0:
+            logging.info(f"Evaluation @ {train_step}")
             with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
                 eval_start = time.time()
 
-                print("-------------------")
-                print(env)
-                eval_rollout = env.rollout(
-                    1000, agent, 
+                eval_rollout = eval_env.rollout(
+                    eval_for, agent, 
                     auto_cast_to_device=True, 
                     break_when_any_done=True
                 )
-                print("post eval rollout")
-                print("-------------------")
+
+                eval_rollout = predictor(eval_rollout)
 
                 eval_time = time.time() - eval_start
                 eval_reward = eval_rollout["next", "reward"].sum(-2).mean().item()
@@ -156,7 +189,6 @@ def main(cfg: DictConfig):
                 metrics_to_log["eval/time"] = eval_time
 
                 del eval_rollout
-        
 
         if logger is not None:
             for metric_name, metric_value in metrics_to_log.items():

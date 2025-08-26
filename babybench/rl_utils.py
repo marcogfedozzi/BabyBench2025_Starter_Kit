@@ -3,12 +3,13 @@ from omegaconf import OmegaConf
 import torch
 import torchrl.envs.transforms as T
 from omegaconf import DictConfig, open_dict
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 import logging
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from typing import Type, Tuple
 from functools import partial
+import gymnasium as gym
 
 from torchrl.collectors import DataCollectorBase
 from torchrl.data.replay_buffers import ReplayBuffer
@@ -21,6 +22,7 @@ from typing import Any
 from babybench import utils as bb_utils
 from torchrl.record.loggers.common import Logger
 import os
+from torchrl.envs import default_info_dict_reader, EnvBase, EnvCreator
 
 
 from torchrl.collectors import SyncDataCollector
@@ -108,15 +110,17 @@ def register_script_resolvers():
 	OmegaConf.register_new_resolver("type",  lambda x: hydra.utils.get_object(x))
 	OmegaConf.register_new_resolver("cls",   lambda x: hydra.utils.get_class(x))
 
-def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0) -> GymEnv:
+
+def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: bool = False) -> GymEnv:
 
 	# TODO: add the possibility to specify loc and scale as a list of values, 
 	# and instead of init_stats assign them directly to ObsNorm after computing the
 	# mean of each one (in case of multiple training env and a single eval env)
 
-	reward_wrapper = hydra.utils.instantiate(cfg.reward, _partial_=True)
 
-	env = reward_wrapper(bb_utils.make_env(bbench_config, training=True))
+	env = bb_utils.make_env(bbench_config, training=(not is_eval))
+	reward_wrapper = hydra.utils.instantiate(cfg.reward, _partial_=True)
+	env = reward_wrapper(env)
 
 	_trsf = cfg.env.get("transform", None)
 	if _trsf is not None:
@@ -129,16 +133,17 @@ def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0) -> GymEnv:
 	else:
 		env = GymWrapper(env)
 
+	env.set_info_dict_reader(default_info_dict_reader(["loss_forward", "loss_inverse"]))
 
-	_seed = cfg.get("seed", -1)
-	if _seed > 0:
+	_seed = cfg.eval.get("seed", -1) if is_eval else cfg.env.get("seed", -1)
+	if _seed >= 0:
 		env.set_seed(cfg.seed + seed_mod)
 
 	if isinstance(env, TransformedEnv):
 		init_stats(env, num_iter=cfg.env.init_stats_iter)
 
 	register_env_resolvers(env)
-
+ 
 	return env
 
 
@@ -150,9 +155,14 @@ def register_env_resolvers(env: TransformedEnv) -> None:
 	"""
 
 	OmegaConf.register_new_resolver("env_obs_shape", lambda key: env.observation_spec[key].shape[-1], replace=True)
-	OmegaConf.register_new_resolver("env_act_shape", lambda k: env.action_spec.shape[-1]*k, replace=True)
+	OmegaConf.register_new_resolver("env_act_shape", lambda k=1: env.action_spec.shape[-1]*k, replace=True)
 	OmegaConf.register_new_resolver("env_act_space_low", lambda: env.action_spec.space.low, replace=True)
 	OmegaConf.register_new_resolver("env_act_space_high", lambda: env.action_spec.space.high, replace=True)
+
+def make_predictor(cfg: DictConfig):
+	if cfg.predictor is None:
+		return None
+	return hydra.utils.instantiate(cfg.predictor)
 
 def register_agent_resolvers(agent: TensorDictModule) -> None:
 	"""
@@ -207,24 +217,46 @@ def make_loss(cfg: DictConfig, module: TensorDictModule) -> Tuple[LossModule, Op
 
 	return loss_module, target_net_updater
 
-def make_optimizers(cfg: DictConfig) -> Dict[str, torch.optim.Optimizer]:
-
+def make_optimizers(cfg: DictConfig, predictor=None) -> Dict[str, torch.optim.Optimizer]:
+	"""
+	Instantiate global optimizers from cfg and optionally register predictor's
+	internal optimizers under names compatible with rlu.step_optimizers.
+	"""
 	optim = {}
 
 	for name, optimizer in cfg.optimizers.items():
 		optim[name] = hydra.utils.instantiate(optimizer)
+
+	# If a predictor instance exists and it created optimizers in its ctor,
+	# expose them under "optimizer_predictor_fwd" / "optimizer_predictor_inv"
+	# so rlu.step_optimizers will map them to "loss_predictor_fwd"/"loss_predictor_inv".
+	if predictor is not None:
+		if hasattr(predictor, "fwd_optim") and predictor.fwd_optim is not None:
+			optim["optimizer_predictor_fwd"] = predictor.fwd_optim
+		if hasattr(predictor, "inv_optim") and predictor.inv_optim is not None:
+			optim["optimizer_predictor_inv"] = predictor.inv_optim
 
 	return optim
 
 def _to_device_transform(data: TensorDict, device):
 	return data.to(device, non_blocking=True) if data.device != device else data.clone()
 
-def _rand_init_replay_buffer(env: GymEnv, replay_buffer: ReplayBuffer, rand_steps: int):
+def _rand_init_replay_buffer(make_env_fn: EnvBase | EnvCreator, replay_buffer: ReplayBuffer, rand_steps: int, env_kwargs: Dict = None) -> EnvBase:
 	"""
 	Insert random rollout if necessary to warm up later training.
 	"""
 
+	if isinstance(make_env_fn, EnvCreator):
+		make_env_fn = make_env_fn(**(env_kwargs or {}))
+	elif isinstance(make_env_fn, EnvBase):
+		env = make_env_fn
+
+	if rand_steps <= 0:
+		return env
+
 	replay_buffer.extend(env.rollout(rand_steps))
+
+	return env
 
 def make_collector_rb(cfg: DictConfig, env: GymEnv, agent: TensorDictModule, bbench_config: Any = None) -> Tuple[DataCollectorBase, ReplayBuffer]:
 
@@ -232,10 +264,7 @@ def make_collector_rb(cfg: DictConfig, env: GymEnv, agent: TensorDictModule, bbe
 	replay_buffer = hydra.utils.instantiate(cfg.replay_buffer, transform=_tdtr)
 
 	_irf = cfg.get("init_rand_frames", 0)
-	if _irf > 0:
-		logging.info(f"Warming up Replay Buffer with {_irf} frames")
-		
-		_rand_init_replay_buffer(env, replay_buffer, _irf)
+
 	# Check if the collector expects a list of env-generator functions
 	collector_type = cfg.collector._target_.split('.')[-1]
 	if "Multi" in collector_type:
@@ -246,12 +275,33 @@ def make_collector_rb(cfg: DictConfig, env: GymEnv, agent: TensorDictModule, bbe
 		assert bbench_config is not None, \
 			f"Expected bbench config file to generate multiple copies of the environment, as the Collector is of type: {collector_type}"
 	
+		if _irf > 0:
+			logging.info(f"Warming up Replay Buffer with {_irf} frames")
 		for i in range(num_envs):
-			env.append(partial(make_env, cfg=cfg, bbench_config=bbench_config, seed_mod=i))
 
+			# Note: nesting EnvCreators, not the greatest design choice, but this allows
+			# to initialize the replay buffer. The inner EnvCreator is instantiated within
+			# the call to _rand_init_[...], resolving the nesting. 
+			env.append(
+				EnvCreator(
+					create_env_fn=_rand_init_replay_buffer, # init every env with random samples if needed
+					env=EnvCreator(
+						create_env_fn=make_env,
+						create_env_kwargs=dict(cfg=cfg, bbench_config=bbench_config, seed_mod=i)
+					),
+					create_env_kwargs=dict(replay_buffer=replay_buffer, rand_steps=_irf)
+				)
+			)
+			
+	elif _irf > 0:
+		logging.info(f"Warming up Replay Buffer with {_irf} frames")
+		
+		env = _rand_init_replay_buffer(env, replay_buffer, _irf)
 	# Random Warm Up
 
+	from torchrl.collectors import MultiaSyncDataCollector
 
+	MultiaSyncDataCollector
 	collector = hydra.utils.instantiate(cfg.collector, create_env_fn=env, policy=agent, replay_buffer=replay_buffer)
 
 	return collector, replay_buffer
@@ -322,3 +372,15 @@ def save_model(cfg: DictConfig, save_dir: str, logger: Logger, loss_module: Loss
 
 	with open(os.path.join(dir_name, "config.yaml"), "w") as f:
 			OmegaConf.save(cfg, f)
+
+def log_info_keys(cfg: DictConfig, td: TensorDict, logging_dict: Dict[str, Any]):
+	"""Inplace update of the logging dictionary with the elements of td whose keys are
+	specified in the "info_keys" element of the cfg.
+	"""
+
+	for key in cfg.env.get("info_keys", []):
+		if not key in td.keys():
+			# Do not issue warning or it will flood the terminal, simply ignore
+			continue
+		
+		logging_dict[f"info/{key}"] = td[key].mean().item()
