@@ -1,0 +1,3 @@
+_target_: babybench.rewards.SurpriseTouchReward
+device: ${device}
+eta: 100
