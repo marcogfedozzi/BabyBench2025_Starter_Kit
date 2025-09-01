@@ -1,12 +1,12 @@
 defaults:
 - default
-- override collector: async
+- override collector: sync
 - override reward: none
 - override predictor: forward_inverse
 - _self_
 
 obs_modality: touch
-train_steps: 10_000
+train_steps: 5_000
 init_rand_frames: 500
 
 eval:
@@ -27,4 +27,4 @@ save_models: false
 replay_buffer:
   shared: false
   prefetch: null
-  batch_size: 128
+  batch_size: 32

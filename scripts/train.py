@@ -116,13 +116,12 @@ def main(cfg: DictConfig):
 
         # Sample from the replay buffer
         td = replay_buffer.sample()
-        td = predictor(td) # extra computation for intrinsic reward or else
-
 
         rlu.log_info_keys(cfg, td, metrics_to_log)
 
         # Compute the loss
         loss_td = loss_module(td)
+        td, loss_td = predictor(td, loss_td) # extra computation for intrinsic reward or else
 
         # Update Networks
 
@@ -134,6 +133,11 @@ def main(cfg: DictConfig):
         traning_time = time.time() - training_start_time
 
         episode_end = td["next", "done"] if td["next", "done"].any() else td["next", "truncated"]
+
+        print("#######")
+        print(td["next", "reward"], td["next", "reward"].shape)
+        print(episode_end)
+        print("###########")
 
         episode_rewards = td["next", "reward"][episode_end]
 

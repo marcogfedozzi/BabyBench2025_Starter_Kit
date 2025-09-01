@@ -51,4 +51,3 @@ action_high: ${env_act_space_high:}
 
 beta: 0.5
 eta: 100
-device: ${device}
