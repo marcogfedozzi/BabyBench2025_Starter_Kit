@@ -53,33 +53,6 @@ def main(cfg: DictConfig):
     agent = rlu.make_agent(cfg, env)
     logging.info("Agent created")
 
-    """
-    # Debug: print parameter/buffer dtypes & devices
-    def print_module_dtypes(module):
-        for name, p in module.named_parameters(recurse=True):
-            print(f"param  {name:40s} dtype={p.dtype} device={p.device} shape={tuple(p.shape)}")
-        for name, b in module.named_buffers(recurse=True):
-            print(f"buffer {name:40s} dtype={b.dtype} device={b.device} shape={tuple(b.shape)}")
-
-    print_module_dtypes(agent)
-
-    # Optional: run one forward with a sample tensordict from the env to see input/output dtypes
-    try:
-        sample_td = env.reset()  # Tensordict or dict depending on env
-        # move sample to agent device if needed:
-        # sample_td = sample_td.to(next(agent.parameters()).device)  # if tensordict supports .to()
-        out = agent(sample_td.to(agent.device))
-        print("Agent forward outputs:")
-        for k in out.keys():
-            v = out.get(k)
-            if isinstance(v, torch.Tensor):
-                print(f"  {k}: dtype={v.dtype} device={v.device} shape={tuple(v.shape)}")
-    except Exception as e:
-        print("Agent forward failed:", e)
-
-    return
-    """
-
 
     # Predictor
 
@@ -186,7 +159,7 @@ def main(cfg: DictConfig):
         # not ideal, to be changed
         
         if eval_every is not None and train_step % eval_every == 0:
-            logging.info(f"Evaluation @ {train_step}")
+            logging.info(f"Evaluation @ {train_step} -- Init")
             with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
                 eval_start = time.time()
 
@@ -196,7 +169,7 @@ def main(cfg: DictConfig):
                     break_when_any_done=True
                 )
 
-                eval_loss_td = loss_module(eval_rollout)
+                eval_loss_td = loss_module(eval_rollout.to(agent.device))
 
                 eval_rollout, eval_loss_td = predictor(eval_rollout, eval_loss_td)
 
@@ -207,6 +180,8 @@ def main(cfg: DictConfig):
                 
                 for k, v in eval_loss_td.items():
                     metrics_to_log[f"eval/{k}"] = v.detach().item()
+
+                logging.info(f"Evaluation @ {train_step} -- End")
 
                 del eval_rollout, eval_loss_td
 

@@ -1,6 +1,6 @@
 defaults:
 - default
-- override collector: sync
+- override collector: async
 - override reward: none
 - override predictor: forward_inverse
 - _self_
@@ -16,7 +16,7 @@ eval:
   for: 1_000
 
 env:
-  num_envs: 1
+  num_envs: 2
   init_stats_iter: 100
   # info_keys:
   #   - intrinsic_loss_fwd
