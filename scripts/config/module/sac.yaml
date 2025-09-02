@@ -9,7 +9,7 @@ common_operator:
     out_features: 1024
     num_cells: [64, 64]
     activation_class: ${cls:torch.nn.ReLU} # custom resolver
-    device: null
+    device: ${device}
   
   in_keys: ${obs_modality}
   out_keys: hidden
@@ -26,7 +26,7 @@ policy_operator:
           out_features: ${env_act_shape:2} # custom resolver
           num_cells: [64, 128]
           activation_class: ${cls:torch.nn.ReLU} # custom resolver
-          device: null
+          device: ${device}
         - _target_: torchrl.modules.NormalParamExtractor
           scale_mapping: biased_softplus_1.0
           scale_lb: 0.01
@@ -57,6 +57,7 @@ value_operator:
     out_features: 1
     num_cells: [64, 32]
     activation_class: ${cls:torch.nn.ReLU} # custom resolver
-    device: null
+    device: ${device}
+
   
   in_keys: [hidden, action]

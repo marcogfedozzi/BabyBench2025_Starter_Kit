@@ -9,6 +9,7 @@ from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from typing import Type, Tuple
 from functools import partial
+import copy
 import gymnasium as gym
 
 from torchrl.collectors import DataCollectorBase
@@ -185,7 +186,7 @@ def make_agent(cfg: DictConfig, env: GymEnv) -> TensorDictModule:
 	# Initialize the lazy modules
 	with torch.no_grad(), set_exploration_type(ExplorationType.RANDOM):
 		td = env.fake_tensordict()
-		ac_module(td)
+		ac_module(td.to(ac_module.device))
 	
 	return ac_module
 
@@ -299,10 +300,15 @@ def make_collector_rb(cfg: DictConfig, env: GymEnv, agent: TensorDictModule, bbe
 		env = _rand_init_replay_buffer(env, replay_buffer, _irf)
 	# Random Warm Up
 
-	from torchrl.collectors import MultiaSyncDataCollector
-
-	MultiaSyncDataCollector
-	collector = hydra.utils.instantiate(cfg.collector, create_env_fn=env, policy=agent, replay_buffer=replay_buffer)
+	# give the collector a CPU copy of the policy so worker processes don't
+	# receive CUDA tensors/handles (which cause spawn/pickle errors).
+	collector = hydra.utils.instantiate(
+		cfg.collector,
+		create_env_fn=env,
+		policy=agent,
+		replay_buffer=replay_buffer,
+		policy_device="cpu",
+	)
 
 	return collector, replay_buffer
 
@@ -378,7 +384,12 @@ def log_info_keys(cfg: DictConfig, td: TensorDict, logging_dict: Dict[str, Any])
 	specified in the "info_keys" element of the cfg.
 	"""
 
-	for key in cfg.env.get("info_keys", []):
+	info_keys = cfg.env.get("info_keys", [])
+
+	if info_keys is None:
+		return
+
+	for key in info_keys:
 		if not key in td.keys():
 			# Do not issue warning or it will flood the terminal, simply ignore
 			continue

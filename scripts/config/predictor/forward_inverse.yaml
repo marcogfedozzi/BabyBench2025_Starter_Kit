@@ -2,6 +2,7 @@ _target_: babybench.predictors.ForwardInverseSurprisePredictor
 feat_size: 256
 in_keys:
   - touch
+dtype: ${type:torch.float32}
 
 feat_extractor:
   _target_: torchrl.modules.MLP

@@ -1,0 +1,7 @@
+tofloat32:
+  _target_: torchrl.envs.transforms.DTypeCastTransform
+  _convert_: partial
+
+  in_keys: ${obs_modality}
+  dtype_in: ${type:torch.float64}
+  dtype_out: ${type:torch.float32}

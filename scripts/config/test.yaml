@@ -18,13 +18,13 @@ eval:
 env:
   num_envs: 1
   init_stats_iter: 100
-  info_keys:
-    - intrinsic_loss_fwd
-    - intrinsic_loss_inv
+  # info_keys:
+  #   - intrinsic_loss_fwd
+  #   - intrinsic_loss_inv
 
 save_models: false
 
 replay_buffer:
-  shared: false
+  shared: true
   prefetch: null
   batch_size: 32

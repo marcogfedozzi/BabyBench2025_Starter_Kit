@@ -10,8 +10,6 @@ from babybench import rl_utils as rlu
 
 from omegaconf import DictConfig
 
-
-
 @hydra.main(version_base="1.3.2", config_path="./config", config_name="default") # default
 def main(cfg: DictConfig):
 
@@ -36,6 +34,7 @@ def main(cfg: DictConfig):
     env = rlu.make_env(cfg, train_config)
     logging.info("Env created")
 
+
     # Eval Env
 
     eval_every = None
@@ -53,6 +52,34 @@ def main(cfg: DictConfig):
 
     agent = rlu.make_agent(cfg, env)
     logging.info("Agent created")
+
+    """
+    # Debug: print parameter/buffer dtypes & devices
+    def print_module_dtypes(module):
+        for name, p in module.named_parameters(recurse=True):
+            print(f"param  {name:40s} dtype={p.dtype} device={p.device} shape={tuple(p.shape)}")
+        for name, b in module.named_buffers(recurse=True):
+            print(f"buffer {name:40s} dtype={b.dtype} device={b.device} shape={tuple(b.shape)}")
+
+    print_module_dtypes(agent)
+
+    # Optional: run one forward with a sample tensordict from the env to see input/output dtypes
+    try:
+        sample_td = env.reset()  # Tensordict or dict depending on env
+        # move sample to agent device if needed:
+        # sample_td = sample_td.to(next(agent.parameters()).device)  # if tensordict supports .to()
+        out = agent(sample_td.to(agent.device))
+        print("Agent forward outputs:")
+        for k in out.keys():
+            v = out.get(k)
+            if isinstance(v, torch.Tensor):
+                print(f"  {k}: dtype={v.dtype} device={v.device} shape={tuple(v.shape)}")
+    except Exception as e:
+        print("Agent forward failed:", e)
+
+    return
+    """
+
 
     # Predictor
 
@@ -113,7 +140,6 @@ def main(cfg: DictConfig):
         collected_obs += collected_frames
         training_start_time = time.time()
 
-
         # Sample from the replay buffer
         td = replay_buffer.sample()
 
@@ -133,11 +159,6 @@ def main(cfg: DictConfig):
         traning_time = time.time() - training_start_time
 
         episode_end = td["next", "done"] if td["next", "done"].any() else td["next", "truncated"]
-
-        print("#######")
-        print(td["next", "reward"], td["next", "reward"].shape)
-        print(episode_end)
-        print("###########")
 
         episode_rewards = td["next", "reward"][episode_end]
 
@@ -175,14 +196,19 @@ def main(cfg: DictConfig):
                     break_when_any_done=True
                 )
 
-                eval_rollout = predictor(eval_rollout)
+                eval_loss_td = loss_module(eval_rollout)
+
+                eval_rollout, eval_loss_td = predictor(eval_rollout, eval_loss_td)
 
                 eval_time = time.time() - eval_start
                 eval_reward = eval_rollout["next", "reward"].sum(-2).mean().item()
                 metrics_to_log["eval/reward"] = eval_reward
                 metrics_to_log["eval/time"] = eval_time
+                
+                for k, v in eval_loss_td.items():
+                    metrics_to_log[f"eval/{k}"] = v.detach().item()
 
-                del eval_rollout
+                del eval_rollout, eval_loss_td
 
         if logger is not None:
             for metric_name, metric_value in metrics_to_log.items():
