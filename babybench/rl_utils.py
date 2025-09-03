@@ -120,6 +120,8 @@ def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: boo
 
 
 	env = bb_utils.make_env(bbench_config, training=(not is_eval))
+
+	_info_keys = env.reset()[1]
 	reward_wrapper = hydra.utils.instantiate(cfg.reward, _partial_=True)
 	env = reward_wrapper(env)
 
@@ -134,7 +136,9 @@ def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: boo
 	else:
 		env = GymWrapper(env)
 
-	env.set_info_dict_reader(default_info_dict_reader(["loss_forward", "loss_inverse"]))
+	if _info_keys:
+		logging.info(f"Setting info dict with keys {_info_keys}")
+		env.set_info_dict_reader(default_info_dict_reader(_info_keys))
 
 	_seed = cfg.eval.get("seed", -1) if is_eval else cfg.env.get("seed", -1)
 	if _seed >= 0:
@@ -331,6 +335,15 @@ def make_logger(cfg: DictConfig) -> Logger:
 									 ),
 									 **kwargs)
 
+def update_config_savedir(bbench_config, run_id):
+	"""
+	Modify the save dir written in the config structure so that the run gets saved alongside the model.
+	"""
+
+	bbench_config["save_dir"] = "models/run_"+run_id
+
+	return bbench_config
+
 def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: TensorDict) -> TensorDict:
 	"""
 	Backward steps through the losses for which an optimizer is specified.
@@ -365,16 +378,16 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 
 
 
-def save_model(cfg: DictConfig, save_dir: str, logger: Logger, loss_module: LossModule, optimizers: Dict[str, torch.optim.Optimizer]):
+def save_model(cfg: DictConfig, save_dir: str, logger: Logger, agent:TensorDictModule, loss_module: LossModule, optimizers: Dict[str, torch.optim.Optimizer]):
 	run_name = logger.experiment.name
 	run_id  = logger.experiment.id
 	dir_name = os.path.join(save_dir, "run_"+str(run_id))
 	os.makedirs(dir_name, exist_ok=True)
 	logging.info(f"Saving the models of the run in {dir_name}")
 
-	#torch.save(policy_module.state_dict(), os.path.join(dir_name, "policy_module.pth"))
-	#torch.save(qvalue_module.state_dict(), os.path.join(dir_name, "qvalue_module.pth"))
+	torch.save(agent.state_dict(), os.path.join(dir_name, "actor_module.pth"))
 	torch.save(loss_module.state_dict(), os.path.join(dir_name, "loss_module.pth"))
+
 	for optim_name, optim in optimizers.items():
 			torch.save(optim.state_dict(), os.path.join(dir_name, f"{optim_name}.pth"))
 
