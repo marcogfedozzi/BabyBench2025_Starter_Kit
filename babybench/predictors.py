@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 from typing import List, Optional
 
+
 class ForwardInverseSurprisePredictor(TensorDictModule):
     """
     TensorDictModule wrapper around feat_extractor, forward and inverse predictors.
@@ -26,8 +27,7 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         inverse_model: torch.nn.Module,
         forward_loss_fn: torch.nn.Module,
         inverse_loss_fn: torch.nn.Module,
-        forward_optim: torch.optim.Optimizer,
-        inverse_optim: torch.optim.Optimizer,
+        optim: torch.optim.Optimizer,
         in_keys: List[str] | str,
         feat_size: int,
         action_low: float = -1.0,
@@ -52,8 +52,13 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         # loss/optim
         self.fwd_loss_fn = forward_loss_fn
         self.inv_loss_fn = inverse_loss_fn
-        self.fwd_optim = forward_optim(list(self.feat_ext.parameters()) + list(self.fwd_mod.parameters()))
-        self.inv_optim = inverse_optim(list(self.feat_ext.parameters()) + list(self.inv_mod.parameters()))
+
+        self._optim = optim(
+            list(self.feat_ext.parameters()) + 
+            list(self.fwd_mod.parameters()) + 
+            list(self.inv_mod.parameters())
+        )
+    
 
         try:
             len(in_keys)
@@ -107,11 +112,12 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         cos_target = feats_t_next_n.new_ones(feats_t_next_n.size(0))
 
         # losses
-        L_fwd = self._beta * self.fwd_loss_fn(feats_t_next_n, feats_t_next_pred_n, cos_target)
-        L_inv = (1.0 - self._beta) * self.inv_loss_fn(actions, action_pred)
+        L_fwd = self.fwd_loss_fn(feats_t_next_n, feats_t_next_pred_n, cos_target)
+        L_inv = self.inv_loss_fn(actions, action_pred)
 
-        loss_td.set("loss_predictor_fwd", L_fwd)
-        loss_td.set("loss_predictor_inv", L_inv)
+        L_all = self._beta * L_fwd + (1.0 - self._beta) * L_inv
+
+        loss_td.set("loss_predictor", L_all)
         
         # intrinsic reward (detach, move to CPU)
         surprise = (self._eta / 2.0) * torch.linalg.vector_norm(feats_t_next_pred - feats_t_next, dim=-1)
@@ -126,3 +132,7 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         # losses already set above
 
         return td, loss_td
+    
+    @property
+    def optim(self):
+        return {"optimizer_predictor": self._optim}

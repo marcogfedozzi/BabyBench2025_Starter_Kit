@@ -66,6 +66,7 @@ def main(cfg: DictConfig):
     # Optimizers
 
     optimizers = rlu.make_optimizers(cfg)
+    optimizers.update(predictor.optim)
     logging.info("Optimizers created")
 
     # Collector and ReplayBuffer
@@ -76,6 +77,7 @@ def main(cfg: DictConfig):
     # Training
 
     pbar = tqdm(total=collector.total_frames)
+    pbar_every = cfg.get("pbar_every", 1)
 
     collected_obs = 0
     prec_wc = 0
@@ -105,7 +107,8 @@ def main(cfg: DictConfig):
         collector.update_policy_weights_() # Needed for aSync collection
         collected_frames, prec_wc = update_write_count(replay_buffer, prec_wc)
 
-        pbar.set_description(f"Training Step: {train_step}")
+        if train_step % pbar_every == 0:
+            pbar.set_description(f"Training Step: {train_step}")
 
         metrics_to_log["replay_buffer/collected_frames"] = collected_frames
         metrics_to_log["replay_buffer/write_count"] = replay_buffer.write_count

@@ -1,30 +1,31 @@
 defaults:
 - transform@env.transform: default
 - logger: wandb
-- reward: touch
+- reward: none
+- predictor: forward_inverse
 - module: sac
 - loss: soft_sac_loss
 - optimizers: sac_adam
 - collector: multiasync
 - replay_buffer: default
-- predictor: none
 - _self_
 
 seed: 42
 obs_modality: touch
-train_steps: 500_000
+train_steps: 200_000
 init_rand_frames: 1_000
+pbar_every: 1000
 
 eval:
   seed: 0
-  on: false
-  every: 1_000
+  is_on: true
+  every: 10_000
   for: 1_000
 
 env:
   seed: ${seed}
-  num_envs: 4
-  init_stats_iter: 5_000
+  num_envs: 8
+  init_stats_iter: 1_000
   info_keys: null
 
 device: ${get_device:} # custom resolver
@@ -38,7 +39,7 @@ logger:
 replay_buffer:
   shared: true
   prefetch: null
-  batch_size: 1024
+  batch_size: 4096
 
 collector:
   frames_per_batch: 16

@@ -37,12 +37,7 @@ inverse_loss_fn:
   _target_: torch.nn.MSELoss
   reduction: mean
 
-forward_optim:
-  _partial_: true
-  _target_: torch.optim.Adam
-  lr: 1e-3
-
-inverse_optim:
+optim:
   _partial_: true
   _target_: torch.optim.Adam
   lr: 1e-3
@@ -50,5 +45,5 @@ inverse_optim:
 action_low: ${env_act_space_low:}
 action_high: ${env_act_space_high:}
 
-beta: 0.5
-eta: 100
+beta: 0.2
+eta: 1

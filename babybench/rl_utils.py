@@ -242,15 +242,17 @@ def make_optimizers(cfg: DictConfig, predictor=None) -> Dict[str, torch.optim.Op
 def _to_device_transform(data: TensorDict, device):
 	return data.to(device, non_blocking=True) if data.device != device else data.clone()
 
-def _rand_init_replay_buffer(make_env_fn: EnvBase | EnvCreator, replay_buffer: ReplayBuffer, rand_steps: int, env_kwargs: Dict = None) -> EnvBase:
+def _rand_init_replay_buffer(env_fn: EnvBase | EnvCreator, replay_buffer: ReplayBuffer, rand_steps: int, env_kwargs: Dict = None) -> EnvBase:
 	"""
 	Insert random rollout if necessary to warm up later training.
 	"""
 
-	if isinstance(make_env_fn, EnvCreator):
-		make_env_fn = make_env_fn(**(env_kwargs or {}))
-	elif isinstance(make_env_fn, EnvBase):
-		env = make_env_fn
+	if isinstance(env_fn, EnvCreator):
+		env = env_fn(**(env_kwargs or {}))
+	elif isinstance(env_fn, EnvBase):
+		env = env_fn
+	else:
+		raise RuntimeError(f"Unrecognized env type: {env_fn}")
 
 	if rand_steps <= 0:
 		return env
@@ -286,10 +288,10 @@ def make_collector_rb(cfg: DictConfig, env: GymEnv, agent: TensorDictModule, bbe
 			env.append(
 				EnvCreator(
 					create_env_fn=_rand_init_replay_buffer, # init every env with random samples if needed
-					env=EnvCreator(
-						create_env_fn=make_env,
-						create_env_kwargs=dict(cfg=cfg, bbench_config=bbench_config, seed_mod=i)
-					),
+						env_fn=EnvCreator(
+							create_env_fn=make_env,
+							create_env_kwargs=dict(cfg=cfg, bbench_config=bbench_config, seed_mod=i)
+						),
 					create_env_kwargs=dict(replay_buffer=replay_buffer, rand_steps=_irf)
 				)
 			)
@@ -347,7 +349,7 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 
 	for optim_name, optim in optimizers.items():
 		loss_name = optim_name.replace("optimizer", "loss")
-
+		
 		if not loss_name in losses:
 			logging.warning(f"Loss item {loss_name} not found. Available entries are {losses.keys()}.")
 			continue

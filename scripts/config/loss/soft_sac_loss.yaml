@@ -7,6 +7,8 @@ module:
   loss_function: smooth_l1
   delay_actor: false
   delay_qvalue: true
+  min_alpha: 0.1
+  max_alpha: 1.0
 
 value_estimator:
   gamma: 0.99
