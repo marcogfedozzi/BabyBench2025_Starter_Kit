@@ -57,6 +57,7 @@ def main(cfg: DictConfig):
 	# Predictor
 
 	predictor = rlu.make_predictor(cfg)
+	logging.info("Predictor created")
 
 	# Loss
 
@@ -65,8 +66,9 @@ def main(cfg: DictConfig):
 
 	# Optimizers
 
-	optimizers = rlu.make_optimizers(cfg)
+	optimizers, clip_grad_func = rlu.make_optimizers(cfg, loss_module)
 	optimizers.update(predictor.optim)
+	clip_grad_func.update(predictor.clip_grad)
 	logging.info("Optimizers created")
 
 	# Collector and ReplayBuffer
@@ -127,12 +129,12 @@ def main(cfg: DictConfig):
 
 		# Update Networks
 
-		rlu.step_optimizers(optimizers, loss_td)
+		grad_norms = rlu.step_optimizers(optimizers, loss_td, clip_grad_func)
 
 		if target_net_updater is not None:            
 			target_net_updater.step() # Polyak update
 		
-		traning_time = time.time() - training_start_time
+		training_time = time.time() - training_start_time
 
 		episode_end = td["next", "done"] if td["next", "done"].any() else td["next", "truncated"]
 
@@ -140,6 +142,9 @@ def main(cfg: DictConfig):
 
 		# log the norm of the action vector, averaged across the batch dim
 		metrics_to_log["info/action_magnitude"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
+
+		for param_group in grad_norms:
+			metrics_to_log["info/"+param_group] = grad_norms[param_group]
 
 		# Logging
 
@@ -155,7 +160,7 @@ def main(cfg: DictConfig):
 			for k, v in loss_td.items():
 				metrics_to_log[f"train/{k}"] = v.detach().item()
 			metrics_to_log["train/collection_time"] = collection_time
-			metrics_to_log["train/training_time"] = traning_time
+			metrics_to_log["train/training_time"] = training_time
 
 		# Evaluation
 		# Notice that for now we're evauating using the same environment used for training,

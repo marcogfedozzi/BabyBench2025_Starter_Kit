@@ -42,6 +42,8 @@ optim:
   _target_: torch.optim.Adam
   lr: 1e-3
 
+clip_grad: 1.0
+
 action_low: ${env_act_space_low:}
 action_high: ${env_act_space_high:}
 

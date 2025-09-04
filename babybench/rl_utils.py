@@ -194,10 +194,12 @@ def make_agent(cfg: DictConfig, env: GymEnv) -> TensorDictModule:
 	
 	return ac_module
 
+"""
 def register_loss_resolvers(module: TensorDict, loss_module: LossModule):
 	OmegaConf.register_new_resolver("loss_log_alpha", lambda: [loss_module.log_alpha], replace=True)
 	OmegaConf.register_new_resolver("agent_policy_parameters", lambda: module.get_policy_operator().parameters(), replace=True)
 	OmegaConf.register_new_resolver("agent_critic_parameters", lambda: module.get_critic_operator().parameters(), replace=True)
+"""
 
 def make_loss(cfg: DictConfig, module: TensorDictModule) -> Tuple[LossModule, Optional[TargetNetUpdater]]:
 	"""
@@ -218,30 +220,53 @@ def make_loss(cfg: DictConfig, module: TensorDictModule) -> Tuple[LossModule, Op
 	if target_net_updater is not None:
 		target_net_updater: TargetNetUpdater = hydra.utils.instantiate(cfg.loss.target_net_updater, loss_module=loss_module)
 
-	register_loss_resolvers(module, loss_module)
+	#register_loss_resolvers(module, loss_module)
 
 	return loss_module, target_net_updater
 
-def make_optimizers(cfg: DictConfig, predictor=None) -> Dict[str, torch.optim.Optimizer]:
+def make_optimizers(cfg: DictConfig, loss_module: LossModule) -> Dict[str, torch.optim.Optimizer]:
 	"""
 	Instantiate global optimizers from cfg and optionally register predictor's
 	internal optimizers under names compatible with rlu.step_optimizers.
 	"""
 	optim = {}
+	clip_grad_func = {}
+	def _get_params_with_grad(module: torch.nn.Module, name:str) -> List[torch.nn.Parameter]:
+		return [param for param_name, param in module.named_parameters() if name in param_name and param.requires_grad]
 
-	for name, optimizer in cfg.optimizers.items():
-		optim[name] = hydra.utils.instantiate(optimizer)
+	for name, value in cfg.optimizers.items():
 
-	# If a predictor instance exists and it created optimizers in its ctor,
-	# expose them under "optimizer_predictor_fwd" / "optimizer_predictor_inv"
-	# so rlu.step_optimizers will map them to "loss_predictor_fwd"/"loss_predictor_inv".
-	if predictor is not None:
-		if hasattr(predictor, "fwd_optim") and predictor.fwd_optim is not None:
-			optim["optimizer_predictor_fwd"] = predictor.fwd_optim
-		if hasattr(predictor, "inv_optim") and predictor.inv_optim is not None:
-			optim["optimizer_predictor_inv"] = predictor.inv_optim
 
-	return optim
+		if "optim" in name:
+			_net_name = name.replace("optimizer_", "")
+			_p = _get_params_with_grad(loss_module, _net_name)
+			if len(_p) == 0:
+				logging.warning(f"No parameters found for optimizer '{name}' with network name '{_net_name}'")
+				continue
+
+			optim[name] = hydra.utils.instantiate(value, params=_p)
+
+		elif "clip" in name:
+
+			_net_name = name.replace("clip_", "")
+			_p = _get_params_with_grad(loss_module, _net_name)
+
+			if len(_p) == 0:
+				logging.warning(f"No parameters found for required clip '{name}' with network name '{_net_name}'")
+				continue
+				#clip_grad_func[name] = lambda *args, **kwargs: None
+			if value is None:
+				continue
+
+			clip_grad_func[name] = partial(
+				torch.nn.utils.clip_grad_norm_,
+				parameters=_p, 
+				max_norm=value
+			)
+		else:
+			continue
+
+	return optim, clip_grad_func
 
 def _to_device_transform(data: TensorDict, device):
 	return data.to(device, non_blocking=True) if data.device != device else data.clone()
@@ -344,7 +369,8 @@ def update_config_savedir(bbench_config, run_id):
 
 	return bbench_config
 
-def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: TensorDict) -> TensorDict:
+
+def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: TensorDict, clip_grad_func: Dict[str, float]) -> Dict:
 	"""
 	Backward steps through the losses for which an optimizer is specified.
 
@@ -360,8 +386,11 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 
 	lossnames_l = []
 
+	norm_val = {}
+
 	for optim_name, optim in optimizers.items():
 		loss_name = optim_name.replace("optimizer", "loss")
+		clip_name = optim_name.replace("optimizer", "clip")
 		
 		if not loss_name in losses:
 			logging.warning(f"Loss item {loss_name} not found. Available entries are {losses.keys()}.")
@@ -372,9 +401,32 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 		loss: torch.Tensor = losses[loss_name]
 		optim.zero_grad()
 		loss.backward()
+
+		total_norm = 0.0
+		for group in optim.param_groups:
+			params = group['params']
+			group_norm = torch.norm(torch.stack([p.grad.norm() for p in params if p.grad is not None]), p=2).item()
+			print(f"Grad norm for optimizer '{optim_name}': {group_norm}")
+			total_norm += group_norm
+		
+
+		if clip_name in clip_grad_func:
+			# Apply gradient norm clipping using the parameters referenced by the optimizer.
+			# This allows clipping without direct access to the model object.
+			# clip_grad_norm_ will modify gradients in-place
+
+			total_norm: torch.Tensor = clip_grad_func[clip_name]()
+
+			val = total_norm.item()			
+			norm_val[clip_name.replace("clip", "grad")] = val
+		
+
+		print(loss_name, loss.item(), total_norm, val)
+		print("-----")
+
 		optim.step()
 	
-	return losses.select(*lossnames_l).detach()
+	return norm_val
 
 
 

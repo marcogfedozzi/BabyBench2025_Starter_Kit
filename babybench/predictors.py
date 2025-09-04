@@ -5,6 +5,7 @@ from tensordict.nn import InteractionType, TensorDictModule
 import torch
 import torch.nn.functional as F
 from typing import List, Optional
+from functools import partial
 
 
 class ForwardInverseSurprisePredictor(TensorDictModule):
@@ -28,6 +29,7 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         forward_loss_fn: torch.nn.Module,
         inverse_loss_fn: torch.nn.Module,
         optim: torch.optim.Optimizer,
+        clip_grad: Optional[float],
         in_keys: List[str] | str,
         feat_size: int,
         action_low: float = -1.0,
@@ -54,10 +56,13 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         self.inv_loss_fn = inverse_loss_fn
 
         self._optim = optim(
-            list(self.feat_ext.parameters()) + 
-            list(self.fwd_mod.parameters()) + 
-            list(self.inv_mod.parameters())
+            self.parameters()
+            #list(self.feat_ext.parameters()) + 
+            #list(self.fwd_mod.parameters()) + 
+            #list(self.inv_mod.parameters())
         )
+
+        self._clip_grad = clip_grad
     
 
         try:
@@ -136,3 +141,16 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
     @property
     def optim(self):
         return {"optimizer_predictor": self._optim}
+    
+    @property
+    def clip_grad(self):
+
+        if self._clip_grad is None:
+            return {}
+        
+        return {"clip_predictor":  partial(
+                torch.nn.utils.clip_grad_norm_,
+                parameters=self.parameters(), 
+                max_norm=self._clip_grad
+            )
+        }

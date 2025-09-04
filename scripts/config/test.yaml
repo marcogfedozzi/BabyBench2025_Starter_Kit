@@ -1,13 +1,14 @@
 defaults:
 - default
-- override collector: sync
+- override collector: async
 - override reward: none
 - override predictor: forward_inverse
 - _self_
 
 obs_modality: touch
-train_steps: 5_000
+train_steps: 2_000
 init_rand_frames: 500
+pbar_every: 1
 
 eval:
   seed: 0
@@ -22,7 +23,7 @@ env:
   #   - intrinsic_loss_fwd
   #   - intrinsic_loss_inv
 
-save_models: true
+save_models: false
 
 replay_buffer:
   shared: true
