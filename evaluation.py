@@ -82,12 +82,12 @@ def main():
 
 	cfg = _get_hydra_config(run_dir)
 
-	with omegaconf.open_dict(cfg):
-		cfg.eval.seed = -1
+	#with omegaconf.open_dict(cfg):
+	#	cfg.eval.seed = -1
 	eval_config = rlu.update_config_savedir(eval_config, args.run)
 
 	# Env
-	env = rlu.make_env(cfg, eval_config,is_eval=True)
+	env = rlu.make_env(cfg, eval_config, is_eval=True)
 
 
 	# Initialize evaluation object
@@ -95,7 +95,7 @@ def main():
 		env=env,
 		duration=args.duration,
 		render=args.render,
-		save_dir="run_"+args.run,
+		save_dir="models/run_"+args.run,
 	)
 
 	# Preview evaluation of training log
@@ -108,9 +108,24 @@ def main():
 	agent = rlu.make_agent(cfg, env)
 
 	agent_file = os.path.join(run_dir, "actor_module.pth")
-	agent.load_state_dict(torch.load(agent_file, map_location=device))
+	
+	# capture parameter/buffer values before loading
+	try:
+		before_sd = {k: v.detach().cpu().clone() for k, v in agent.state_dict().items()}
+	except Exception:
+		before_sd = None
 
-	print("Loaded policy and Q-value modules from", agent_file)
+	# load saved state dict
+	loaded = None
+	try:
+		loaded = torch.load(agent_file, map_location=device)
+		agent.load_state_dict(loaded)
+		print("Loaded policy and Q-value modules from", agent_file)
+	except Exception as e:
+		print(f"ERROR loading state dict from {agent_file}:", e)
+		# re-raise so caller sees the failure
+		raise
+
 
 	###
 	with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
@@ -119,10 +134,16 @@ def main():
 			print(f'Running evaluation episode {ep_idx+1}/{args.episodes}')
 
 			# Reset environment and evaluation
-			obs = env.reset()
+			#obs = env.reset()
 			evaluation.reset()
 
-			td = env.rollout(args.duration, agent)
+			td = env.rollout(args.duration, agent, auto_cast_to_device=True)
+			print(torch.linalg.vector_norm(td["touch"], dim=-1))
+			print(torch.max(td["touch"], dim=-1))
+			print(torch.min(td["touch"], dim=-1))
+			print(torch.linalg.vector_norm(td["action"], dim=-1))
+			print(torch.max(td["action"], dim=-1))
+			print(torch.min(td["action"], dim=-1))
 
 			for t_idx in range(args.duration):
 				# Note: there's really nothing useful in the info dict

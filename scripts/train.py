@@ -211,7 +211,8 @@ def main(cfg: DictConfig):
 			logger,
 			agent,
 			loss_module,
-			optimizers
+			optimizers,
+			predictor=predictor
 		)
 
 	logging.info("Shutting down")

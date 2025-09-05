@@ -164,7 +164,7 @@ def register_env_resolvers(env: TransformedEnv) -> None:
 	OmegaConf.register_new_resolver("env_act_space_low", lambda: env.action_spec.space.low, replace=True)
 	OmegaConf.register_new_resolver("env_act_space_high", lambda: env.action_spec.space.high, replace=True)
 
-def make_predictor(cfg: DictConfig):
+def make_predictor(cfg: DictConfig) -> TensorDictModule:
 	if cfg.predictor is None:
 		return None
 	return hydra.utils.instantiate(cfg.predictor)
@@ -418,7 +418,15 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 
 
 
-def save_model(cfg: DictConfig, save_dir: str, logger: Logger, agent:TensorDictModule, loss_module: LossModule, optimizers: Dict[str, torch.optim.Optimizer]):
+def save_model(cfg: DictConfig, save_dir: str, logger: Logger, agent:TensorDictModule, loss_module: LossModule, optimizers: Dict[str, torch.optim.Optimizer], predictor=None):
+	"""
+	Save agent, loss module, optimizers and optionally predictor state.
+
+	If `predictor` is provided it must be a module-like object with a
+	`state_dict()` method (e.g. the predictor TensorDictModule used during
+	training). Predictor weights will be saved to `predictor_module.pth` in
+	the run directory.
+	"""
 	run_name = logger.experiment.name
 	run_id  = logger.experiment.id
 	dir_name = os.path.join(save_dir, "run_"+str(run_id))
@@ -427,6 +435,13 @@ def save_model(cfg: DictConfig, save_dir: str, logger: Logger, agent:TensorDictM
 
 	torch.save(agent.state_dict(), os.path.join(dir_name, "actor_module.pth"))
 	torch.save(loss_module.state_dict(), os.path.join(dir_name, "loss_module.pth"))
+
+	# Save predictor parameters if provided
+	if predictor is not None:
+		try:
+			torch.save(predictor.state_dict(), os.path.join(dir_name, "predictor_module.pth"))
+		except Exception:
+			logging.warning("Could not save predictor state_dict; skipping predictor save")
 
 	for optim_name, optim in optimizers.items():
 			torch.save(optim.state_dict(), os.path.join(dir_name, f"{optim_name}.pth"))
