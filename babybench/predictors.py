@@ -56,10 +56,9 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         self.inv_loss_fn = inverse_loss_fn
 
         self._optim = optim(
-            self.parameters()
-            #list(self.feat_ext.parameters()) + 
-            #list(self.fwd_mod.parameters()) + 
-            #list(self.inv_mod.parameters())
+            list(self.feat_ext.parameters()) + 
+            list(self.fwd_mod.parameters()) + 
+            list(self.inv_mod.parameters())
         )
 
         self._clip_grad = clip_grad
@@ -150,7 +149,9 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         
         return {"clip_predictor":  partial(
                 torch.nn.utils.clip_grad_norm_,
-                parameters=self.parameters(), 
+                parameters=list(self.feat_ext.parameters()) + 
+                            list(self.fwd_mod.parameters()) + 
+                            list(self.inv_mod.parameters()), 
                 max_norm=self._clip_grad
             )
         }

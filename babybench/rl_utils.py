@@ -402,14 +402,6 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 		optim.zero_grad()
 		loss.backward()
 
-		total_norm = 0.0
-		for group in optim.param_groups:
-			params = group['params']
-			group_norm = torch.norm(torch.stack([p.grad.norm() for p in params if p.grad is not None]), p=2).item()
-			print(f"Grad norm for optimizer '{optim_name}': {group_norm}")
-			total_norm += group_norm
-		
-
 		if clip_name in clip_grad_func:
 			# Apply gradient norm clipping using the parameters referenced by the optimizer.
 			# This allows clipping without direct access to the model object.
@@ -420,10 +412,6 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 			val = total_norm.item()			
 			norm_val[clip_name.replace("clip", "grad")] = val
 		
-
-		print(loss_name, loss.item(), total_norm, val)
-		print("-----")
-
 		optim.step()
 	
 	return norm_val

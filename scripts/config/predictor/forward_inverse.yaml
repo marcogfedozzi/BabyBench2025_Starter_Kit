@@ -48,4 +48,4 @@ action_low: ${env_act_space_low:}
 action_high: ${env_act_space_high:}
 
 beta: 0.2
-eta: 1
+eta: 0.1
