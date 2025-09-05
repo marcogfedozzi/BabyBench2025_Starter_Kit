@@ -44,8 +44,8 @@ optim:
 
 clip_grad: 1.0
 
-action_low: ${env_act_space_low:}
-action_high: ${env_act_space_high:}
+action_low: ${env_act_space_low:} # custom resolver
+action_high: ${env_act_space_high:} # custom resolver
 
 beta: 0.2
 eta: 0.1

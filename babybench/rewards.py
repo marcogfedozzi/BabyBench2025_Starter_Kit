@@ -6,6 +6,9 @@ import gymnasium as gym
 from torchrl.modules import MLP
 import torch.nn.functional as F
 
+import os
+from tensordict import TensorDict
+
 
 class MagnitudeTouchReward(gym.Wrapper):
     def __init__(self, env: gym.Env):
@@ -149,3 +152,149 @@ class SurpriseTouchReward(MagnitudeTouchReward):
             self.feats_t = feats_t_next.detach().squeeze()
 
         return intrinsic_reward, {"loss_forward": L_fwd.detach().cpu(), "loss_inverse": L_inv.detach().cpu()}
+
+
+class PredictorTouchReward(gym.Wrapper):
+    """
+    Gym wrapper that loads a trained predictor (ForwardInverseSurprisePredictor)
+    from a run directory and uses it to compute an intrinsic reward signal.
+
+    Usage:
+        env = PredictorTouchReward(env, run_dir='models/run_4wr9eh6t', device='cpu')
+
+    The wrapper keeps the previous observation (from reset or previous step)
+    and on each step constructs a small TensorDict with:
+      - keys in predictor._in_keys for the previous obs
+      - ('next', key) for the next obs returned by the environment
+      - 'action' and ('next','reward') (the extrinsic reward)
+
+    It then calls predictor(td, loss_td) and extracts the intrinsic component
+    added by the predictor (predictor overwrites ('next','reward') with
+    extrinsic + intrinsic). The intrinsic reward is returned to the environment
+    caller (total_reward = extrinsic + intrinsic).
+    """
+
+    def __init__(self, env: gym.Env, predictor: TensorDictModule, run_dir: str = "models/run_final", predictor_path: str = None, device: str = None):
+        """
+        PredictorTouchReward requires an externally-created `predictor` instance
+        (for example produced by `rlu.make_predictor(cfg)`). The wrapper will
+        optionally load a state dict from `predictor_path` into that predictor
+        if a path is provided.
+        """
+        super().__init__(env)
+
+        if predictor is None:
+            raise ValueError("PredictorTouchReward requires a predictor instance. Create it with rlu.make_predictor(cfg) and pass it to this wrapper.")
+
+        self._td_type = TensorDict
+        self._run_dir = run_dir
+        self._device = torch.device(device) if device is not None else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+
+        # resolve predictor path
+        if predictor_path is None:
+            predictor_path = os.path.join(run_dir, "predictor_module.pth")
+        self._predictor_path = predictor_path
+
+        # use provided predictor instance
+        self.predictor = predictor
+
+        # attempt to load weights into the provided predictor if a state dict exists
+        try:
+            if os.path.exists(self._predictor_path):
+                sd = torch.load(self._predictor_path, map_location=str(self._device))
+                try:
+                    self.predictor.load_state_dict(sd)
+                except Exception:
+                    if isinstance(sd, dict) and "state_dict" in sd:
+                        self.predictor.load_state_dict(sd["state_dict"])
+        except Exception:
+            # ignore load errors and continue with provided predictor as-is
+            pass
+
+        # move predictor to device and set eval()
+        try:
+            self.predictor.to(self._device)
+            self.predictor.eval()
+        except Exception:
+            pass
+
+        # storage for previous observation (to compute transition)
+        self._prev_obs = None
+
+    def reset(self, **kwargs):
+        resp = self.env.reset(**kwargs)
+        # gymnasium may return (obs, info)
+        if isinstance(resp, tuple) and len(resp) == 2:
+            obs, info = resp
+        else:
+            obs = resp
+            info = {}
+
+        self._prev_obs = obs
+        return resp
+
+    def step(self, action):
+        # perform environment step
+        obs_next, extrinsic_reward, terminated, truncated, info = self.env.step(action)
+
+        # default: no intrinsic reward
+        intrinsic_value = 0.0
+
+        if self.predictor is not None and self._prev_obs is not None:
+            try:
+                from tensordict import TensorDict
+
+                td = TensorDict({}, batch_size=())
+                # populate in_keys and next keys
+                in_keys = getattr(self.predictor, "_in_keys", ["touch"]) or ["touch"]
+                for k in in_keys:
+                    # previous obs value
+                    prev_val = None
+                    if isinstance(self._prev_obs, dict):
+                        prev_val = self._prev_obs.get(k)
+                    else:
+                        try:
+                            # tensordict-like
+                            prev_val = self._prev_obs.get(k)
+                        except Exception:
+                            prev_val = None
+
+                    if prev_val is None:
+                        continue
+
+                    t_prev = torch.as_tensor(prev_val, dtype=torch.float32, device=self._device)
+                    t_next = torch.as_tensor(obs_next[k], dtype=torch.float32, device=self._device)
+                    td.set(k, t_prev)
+                    td.set(("next", k), t_next)
+
+                # action: ensure tensor
+                t_act = torch.as_tensor(action, dtype=torch.float32, device=self._device)
+                td.set("action", t_act)
+
+                # set next reward (extrinsic) as a 1x1 tensor so shapes match predictor
+                r_t = torch.as_tensor([[extrinsic_reward]], dtype=torch.float32, device=self._device)
+                td.set(("next", "reward"), r_t)
+
+                loss_td = TensorDict({}, batch_size=())
+
+                # call predictor in inference mode
+                with torch.no_grad():
+                    td_out, _ = self.predictor(td, loss_td)
+
+                # predictor overwrites ('next','reward') with extrinsic+intrinsic
+                pred_reward = td_out.get(("next", "reward"))
+                # compute intrinsic as difference
+                # pred_reward may be tensor shape (1,1) or (1,)
+                if isinstance(pred_reward, torch.Tensor):
+                    intrinsic_tensor = (pred_reward - r_t).detach().cpu()
+                    intrinsic_value = float(intrinsic_tensor.flatten().mean().item())
+            except Exception:
+                intrinsic_value = 0.0
+
+        total_reward = extrinsic_reward + intrinsic_value
+
+        # update prev obs
+        self._prev_obs = obs_next
+
+        # info may be updated with predictor metrics in future
+        return obs_next, total_reward, terminated, truncated, info

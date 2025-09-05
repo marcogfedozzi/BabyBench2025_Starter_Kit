@@ -141,7 +141,8 @@ def main(cfg: DictConfig):
 		episode_rewards = td["next", "reward"][episode_end]
 
 		# log the norm of the action vector, averaged across the batch dim
-		metrics_to_log["info/action_magnitude"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
+		metrics_to_log["train/action_magnitude_mean"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
+		metrics_to_log["train/action_magnitude_std"] 	= torch.linalg.vector_norm(td["action"], dim=-1).std()
 
 		for param_group in grad_norms:
 			metrics_to_log["info/"+param_group] = grad_norms[param_group]
@@ -185,6 +186,9 @@ def main(cfg: DictConfig):
 				eval_reward = eval_rollout["next", "reward"].sum(-2).mean().item()
 				metrics_to_log["eval/reward"] = eval_reward
 				metrics_to_log["eval/time"] = eval_time
+				
+				metrics_to_log["eva/action_magnitude_mean"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
+				metrics_to_log["eva/action_magnitude_std"] = torch.linalg.vector_norm(td["action"], dim=-1).std()
 				
 				for k, v in eval_loss_td.items():
 					metrics_to_log[f"eval/{k}"] = v.detach().item()

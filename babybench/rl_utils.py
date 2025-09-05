@@ -112,7 +112,7 @@ def register_script_resolvers():
 	OmegaConf.register_new_resolver("cls",   lambda x: hydra.utils.get_class(x))
 
 
-def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: bool = False) -> GymEnv:
+def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: bool = False, reward_wrapper: gym.Wrapper = None) -> GymEnv:
 
 	# TODO: add the possibility to specify loc and scale as a list of values, 
 	# and instead of init_stats assign them directly to ObsNorm after computing the
@@ -122,7 +122,10 @@ def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: boo
 	env = bb_utils.make_env(bbench_config, training=(not is_eval))
 
 	_info_keys = env.reset()[1]
-	reward_wrapper = hydra.utils.instantiate(cfg.reward, _partial_=True)
+	
+	if reward_wrapper is None:
+		reward_wrapper = hydra.utils.instantiate(cfg.reward, _partial_=True)
+
 	env = reward_wrapper(env)
 
 	_trsf = cfg.env.get("transform", None)

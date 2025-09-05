@@ -11,50 +11,17 @@ from mimoEnv.envs.mimo_env import MIMoEnv
 import mimoEnv.utils as env_utils
 import babybench.utils as bb_utils
 import babybench.eval as bb_eval
+import babybench.rewards as bb_rewards
 
 import torch
-from tensordict import TensorDict
-from tensordict.nn import InteractionType
-
-from torchrl.envs.libs.gym import GymEnv, GymWrapper, set_gym_backend
-from torchrl.envs import (
-	Compose,
-	SelectTransform,
-	NoopResetEnv,
-	ObservationNorm,
-	RewardSum,
-	StepCounter,
-	ToTensorImage,
-	TransformedEnv,
-	ParallelEnv
-)
-from torchrl.envs.utils import step_mdp
 from torchrl.envs.utils import ExplorationType, set_exploration_type
-
-
-from torchrl.modules import Actor, ActorCriticOperator, ProbabilisticActor, ValueOperator
-from tensordict.nn import (TensorDictModule, TensorDictSequential, 
-						ProbabilisticTensorDictModule, 
-						ProbabilisticTensorDictSequential)
-from torchrl.objectives import SACLoss, SoftUpdate, ValueEstimators
-
-import babybench.utils as bb_utils
-
-from torchrl.modules import ConvNet, MLP
-from torch.nn import Linear
-from torchrl.modules import NormalParamExtractor, TanhNormal
-from torchrl.collectors import SyncDataCollector
-from torchrl.data.replay_buffers import ReplayBuffer
-from torchrl.data.replay_buffers.storages import LazyTensorStorage
-from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
-from torchrl.record.loggers import generate_exp_name, get_logger
-
 
 from babybench import rl_utils as rlu
 from hydra import compose, initialize
 import hydra
 import os
 import omegaconf
+from functools import partial
 
 def main():
 	
@@ -86,9 +53,25 @@ def main():
 	#	cfg.eval.seed = -1
 	eval_config = rlu.update_config_savedir(eval_config, args.run)
 
-	# Env
-	env = rlu.make_env(cfg, eval_config, is_eval=True)
+	# Predictor
 
+	# Env
+	_throwaway_env = rlu.make_env(cfg, eval_config, is_eval=True) # dumb but quick way to set needed resolvers
+	# think instead about passing the env to the predictor
+
+	predictor = rlu.make_predictor(cfg)
+
+	# Intrinsic Reward Wrapper
+	# using the predictor reward
+	pred_reward = partial(
+		bb_rewards.PredictorTouchReward,
+		predictor=predictor,
+		run_dir="models/run_"+args.run
+	)
+
+	# Env
+	env = rlu.make_env(cfg, eval_config, is_eval=True, reward_wrapper=pred_reward)
+	
 
 	# Initialize evaluation object
 	evaluation = bb_eval.EVALS[eval_config['behavior']](
@@ -108,12 +91,6 @@ def main():
 	agent = rlu.make_agent(cfg, env)
 
 	agent_file = os.path.join(run_dir, "actor_module.pth")
-	
-	# capture parameter/buffer values before loading
-	try:
-		before_sd = {k: v.detach().cpu().clone() for k, v in agent.state_dict().items()}
-	except Exception:
-		before_sd = None
 
 	# load saved state dict
 	loaded = None
@@ -129,6 +106,7 @@ def main():
 
 	###
 	with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
+	#with set_exploration_type(ExplorationType.RANDOM), torch.no_grad():
 
 		for ep_idx in range(args.episodes):
 			print(f'Running evaluation episode {ep_idx+1}/{args.episodes}')
@@ -138,12 +116,17 @@ def main():
 			evaluation.reset()
 
 			td = env.rollout(args.duration, agent, auto_cast_to_device=True)
+			print("Touch")
 			print(torch.linalg.vector_norm(td["touch"], dim=-1))
 			print(torch.max(td["touch"], dim=-1))
 			print(torch.min(td["touch"], dim=-1))
+			print("Action")
 			print(torch.linalg.vector_norm(td["action"], dim=-1))
 			print(torch.max(td["action"], dim=-1))
 			print(torch.min(td["action"], dim=-1))
+			print("Reward")
+			print(td[("next", "reward")])
+			print("------------------------")
 
 			for t_idx in range(args.duration):
 				# Note: there's really nothing useful in the info dict
