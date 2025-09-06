@@ -15,6 +15,7 @@ obs_modality: touch
 train_steps: 200_000
 init_rand_frames: 1_000
 pbar_every: 1000
+grad_log_every: 1000
 
 eval:
   seed: 0

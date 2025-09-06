@@ -90,6 +90,7 @@ def main():
 
 	agent = rlu.make_agent(cfg, env)
 
+	"""
 	agent_file = os.path.join(run_dir, "actor_module.pth")
 
 	# load saved state dict
@@ -102,6 +103,7 @@ def main():
 		print(f"ERROR loading state dict from {agent_file}:", e)
 		# re-raise so caller sees the failure
 		raise
+	"""
 
 
 	###
@@ -116,16 +118,17 @@ def main():
 			evaluation.reset()
 
 			td = env.rollout(args.duration, agent, auto_cast_to_device=True)
-			print("Touch")
-			print(torch.linalg.vector_norm(td["touch"], dim=-1))
-			print(torch.max(td["touch"], dim=-1))
-			print(torch.min(td["touch"], dim=-1))
+			#print("Touch")
+			#print(torch.linalg.vector_norm(td["touch"], dim=-1))
+			#print(torch.max(td["touch"], dim=-1))
+			#print(torch.min(td["touch"], dim=-1))
 			print("Action")
-			print(torch.linalg.vector_norm(td["action"], dim=-1))
-			print(torch.max(td["action"], dim=-1))
-			print(torch.min(td["action"], dim=-1))
-			print("Reward")
-			print(td[("next", "reward")])
+			print(td["action"])
+			#print(torch.linalg.vector_norm(td["action"], dim=-1))
+			#print(torch.max(td["action"], dim=-1))
+			#print(torch.min(td["action"], dim=-1))
+			#print("Reward")
+			#print(td[("next", "reward")])
 			print("------------------------")
 
 			for t_idx in range(args.duration):

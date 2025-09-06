@@ -373,7 +373,7 @@ def update_config_savedir(bbench_config, run_id):
 	return bbench_config
 
 
-def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: TensorDict, clip_grad_func: Dict[str, float]) -> Dict:
+def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: TensorDict, clip_grad_func: Dict[str, float], store_per_param_grad: bool = False, param_id_to_name: Optional[Dict[int, str]] = None) -> Tuple[Dict, Dict]:
 	"""
 	Backward steps through the losses for which an optimizer is specified.
 
@@ -390,6 +390,7 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 	lossnames_l = []
 
 	norm_val = {}
+	per_param_grads = {}
 
 	for optim_name, optim in optimizers.items():
 		loss_name = optim_name.replace("optimizer", "loss")
@@ -405,6 +406,17 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 		optim.zero_grad()
 		loss.backward()
 
+		if store_per_param_grad:
+			# collect gradient norms for parameters referenced by this optimizer
+			# always key by parameter id (pid) so the caller can map ids to names externally
+			for g_idx, group in enumerate(optim.param_groups):
+				for p_idx, p in enumerate(group.get('params', [])):
+					pid = id(p)
+					if p.grad is None:
+						per_param_grads[pid] = 0.0
+					else:
+						per_param_grads[pid] = float(p.grad.detach().cpu().norm().item())
+
 		if clip_name in clip_grad_func:
 			# Apply gradient norm clipping using the parameters referenced by the optimizer.
 			# This allows clipping without direct access to the model object.
@@ -417,7 +429,7 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 		
 		optim.step()
 	
-	return norm_val
+	return norm_val, per_param_grads
 
 
 

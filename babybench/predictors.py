@@ -125,10 +125,7 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         
         # intrinsic reward (detach, move to CPU)
         surprise = (self._eta / 2.0) * torch.linalg.vector_norm(feats_t_next_pred - feats_t_next, dim=-1)
-        surprise = surprise.unsqueeze(1)
-
-        # update previous feature (detach)
-        self.feats_t = feats_t_next.detach().squeeze().to(self.device)
+        surprise = surprise.detach().unsqueeze(1)
 
         reward = td["next", "reward"]
 

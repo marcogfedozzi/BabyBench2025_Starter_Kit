@@ -9,10 +9,11 @@ obs_modality: touch
 train_steps: 2_000
 init_rand_frames: 500
 pbar_every: 1
+grad_log_every: 100
 
 eval:
   seed: 0
-  is_on: true
+  is_on: false
   every: 1_000
   for: 1_000
 

@@ -83,6 +83,18 @@ def main(cfg: DictConfig):
 
 	collected_obs = 0
 	prec_wc = 0
+
+	param_id_to_name = {}
+	# agent params
+	for n, p in agent.named_parameters():
+		param_id_to_name[id(p)] = f'sac/{n}'
+	# predictor params
+	if predictor is not None:
+		for n, p in predictor.named_parameters():
+			param_id_to_name[id(p)] = f'predictor/{n}'
+	# loss_module params
+	for n, p in loss_module.named_parameters():
+		param_id_to_name[id(p)] = f'loss/{n}'
 	
 	def update_write_count(replay_buffer, prec_wc):
 		collected_frames = replay_buffer.write_count - prec_wc
@@ -129,7 +141,16 @@ def main(cfg: DictConfig):
 
 		# Update Networks
 
-		grad_norms = rlu.step_optimizers(optimizers, loss_td, clip_grad_func)
+		# build id->name mapping for parameters (once)
+		
+
+		# request per-parameter grad norms from step_optimizers (pass mapping for names)
+		grad_norms, per_param_grads = rlu.step_optimizers(optimizers, loss_td, clip_grad_func, store_per_param_grad=True, param_id_to_name=param_id_to_name)
+
+		# log per-parameter grads at a modest frequency to avoid spamming the logger
+		if train_step % cfg.get('grad_log_every', 100) == 0:
+			for key, gnorm in per_param_grads.items():
+				metrics_to_log[f"grads/{key}"] = gnorm
 
 		if target_net_updater is not None:            
 			target_net_updater.step() # Polyak update
@@ -187,8 +208,8 @@ def main(cfg: DictConfig):
 				metrics_to_log["eval/reward"] = eval_reward
 				metrics_to_log["eval/time"] = eval_time
 				
-				metrics_to_log["eva/action_magnitude_mean"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
-				metrics_to_log["eva/action_magnitude_std"] = torch.linalg.vector_norm(td["action"], dim=-1).std()
+				metrics_to_log["eval/action_magnitude_mean"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
+				metrics_to_log["eval/action_magnitude_std"] = torch.linalg.vector_norm(td["action"], dim=-1).std()
 				
 				for k, v in eval_loss_td.items():
 					metrics_to_log[f"eval/{k}"] = v.detach().item()
