@@ -31,7 +31,6 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         optim: torch.optim.Optimizer,
         clip_grad: Optional[float],
         in_keys: List[str] | str,
-        feat_size: int,
         action_low: float = -1.0,
         action_high: float = 1.0,
         beta: float = 0.5,

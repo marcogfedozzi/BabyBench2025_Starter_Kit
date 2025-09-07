@@ -150,7 +150,7 @@ def main(cfg: DictConfig):
 		# log per-parameter grads at a modest frequency to avoid spamming the logger
 		if train_step % cfg.get('grad_log_every', 100) == 0:
 			for key, gnorm in per_param_grads.items():
-				metrics_to_log[f"grads/{key}"] = gnorm
+				metrics_to_log[f"grads/{param_id_to_name[key]}"] = gnorm
 
 		if target_net_updater is not None:            
 			target_net_updater.step() # Polyak update
@@ -164,6 +164,7 @@ def main(cfg: DictConfig):
 		# log the norm of the action vector, averaged across the batch dim
 		metrics_to_log["train/action_magnitude_mean"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
 		metrics_to_log["train/action_magnitude_std"] 	= torch.linalg.vector_norm(td["action"], dim=-1).std()
+
 
 		for param_group in grad_norms:
 			metrics_to_log["info/"+param_group] = grad_norms[param_group]

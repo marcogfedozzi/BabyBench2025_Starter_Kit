@@ -6,10 +6,11 @@ common_operator:
   module:
     _target_: torchrl.modules.MLP
     #in_features: ${env_obs_shape:${obs_modality}} # custom resolver
-    out_features: 1024
-    num_cells: [64, 64]
+    out_features: 128
+    num_cells: [256, 128]
     activation_class: ${cls:torch.nn.ReLU} # custom resolver
     device: ${device}
+    dropout: 0.0
   
   in_keys: ${obs_modality}
   out_keys: hidden
@@ -29,7 +30,7 @@ policy_operator:
           device: ${device}
         - _target_: torchrl.modules.NormalParamExtractor
           scale_mapping: biased_softplus_1.0
-          scale_lb: 0.01
+          scale_lb: 0.0001
     in_keys: hidden
     out_keys: 
       - loc
@@ -55,7 +56,7 @@ value_operator:
   module:
     _target_: torchrl.modules.MLP
     out_features: 1
-    num_cells: [64, 32]
+    num_cells: [64, 400]
     activation_class: ${cls:torch.nn.ReLU} # custom resolver
     device: ${device}
 

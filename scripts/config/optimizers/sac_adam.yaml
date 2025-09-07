@@ -7,18 +7,21 @@
 
 optimizer_actor:
   _target_: torch.optim.Adam
+  lr: 1e-3
 #  params: ${agent_policy_parameters:} # custom resolver
 
 optimizer_qvalue:
   _target_: torch.optim.Adam
+  lr: 1e-3
 #  params: ${agent_critic_parameters:} # custom resolver
 
 optimizer_alpha:
   _target_: torch.optim.Adam
+  lr: 1e-3
 #  params: ${loss_log_alpha:} # custom resolver
 
-clip_actor: 0.5
+clip_actor: 2.5
 
-clip_qvalue: 1.0
+clip_qvalue: 5.0
 
 clip_alpha: null

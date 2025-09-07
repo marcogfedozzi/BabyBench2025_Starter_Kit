@@ -1,12 +1,11 @@
 _target_: babybench.predictors.ForwardInverseSurprisePredictor
-feat_size: 256
 in_keys:
   - touch
 dtype: ${type:torch.float32}
 
 feat_extractor:
   _target_: torchrl.modules.MLP
-  out_features: ${predictor.feat_size}
+  out_features: 256
   num_cells: [1024,512]
   activation_class: ${cls:torch.nn.ReLU} # custom resolver
   device: ${device}
@@ -14,7 +13,7 @@ feat_extractor:
 
 forward_model:
   _target_: torchrl.modules.MLP
-  out_features: ${predictor.feat_size}
+  out_features: ${predictor.feat_extractor.out_features}
   num_cells: [512,1024]
   activation_class: ${cls:torch.nn.ReLU} # custom resolver
   device: ${device}
@@ -40,7 +39,7 @@ inverse_loss_fn:
 optim:
   _partial_: true
   _target_: torch.optim.Adam
-  lr: 1e-3
+  lr: 3e-4
 
 clip_grad: 1.0
 
