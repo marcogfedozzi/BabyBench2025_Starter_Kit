@@ -39,7 +39,7 @@ inverse_loss_fn:
 optim:
   _partial_: true
   _target_: torch.optim.Adam
-  lr: 3e-4
+  lr: 1e-4
 
 clip_grad: 1.0
 
@@ -48,3 +48,5 @@ action_high: ${env_act_space_high:} # custom resolver
 
 beta: 0.2
 eta: 0.1
+detach_next_features: true
+clamp_surprise: 10

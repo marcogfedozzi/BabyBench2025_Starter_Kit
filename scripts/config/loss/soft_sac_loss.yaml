@@ -9,6 +9,8 @@ module:
   delay_qvalue: true
   min_alpha: 0.01
   max_alpha: 1.0
+  separate_losses: true
+  fixed_alpha: false
 
 value_estimator:
   gamma: 0.99

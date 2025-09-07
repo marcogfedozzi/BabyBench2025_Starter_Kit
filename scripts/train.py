@@ -83,18 +83,6 @@ def main(cfg: DictConfig):
 
 	collected_obs = 0
 	prec_wc = 0
-
-	param_id_to_name = {}
-	# agent params
-	for n, p in agent.named_parameters():
-		param_id_to_name[id(p)] = f'sac/{n}'
-	# predictor params
-	if predictor is not None:
-		for n, p in predictor.named_parameters():
-			param_id_to_name[id(p)] = f'predictor/{n}'
-	# loss_module params
-	for n, p in loss_module.named_parameters():
-		param_id_to_name[id(p)] = f'loss/{n}'
 	
 	def update_write_count(replay_buffer, prec_wc):
 		collected_frames = replay_buffer.write_count - prec_wc
@@ -141,16 +129,13 @@ def main(cfg: DictConfig):
 
 		# Update Networks
 
-		# build id->name mapping for parameters (once)
-		
+		rlu.compute_grads(optimizers, loss_td, clip_grad_func)
 
-		# request per-parameter grad norms from step_optimizers (pass mapping for names)
-		grad_norms, per_param_grads = rlu.step_optimizers(optimizers, loss_td, clip_grad_func, store_per_param_grad=True, param_id_to_name=param_id_to_name)
-
-		# log per-parameter grads at a modest frequency to avoid spamming the logger
 		if train_step % cfg.get('grad_log_every', 100) == 0:
-			for key, gnorm in per_param_grads.items():
-				metrics_to_log[f"grads/{param_id_to_name[key]}"] = gnorm
+			rlu.log_model(loss_module, logger, train_step, "agent")
+			rlu.log_model(predictor, logger, train_step, "predictor")
+
+		rlu.step_optimizers(optimizers)
 
 		if target_net_updater is not None:            
 			target_net_updater.step() # Polyak update
@@ -164,10 +149,6 @@ def main(cfg: DictConfig):
 		# log the norm of the action vector, averaged across the batch dim
 		metrics_to_log["train/action_magnitude_mean"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
 		metrics_to_log["train/action_magnitude_std"] 	= torch.linalg.vector_norm(td["action"], dim=-1).std()
-
-
-		for param_group in grad_norms:
-			metrics_to_log["info/"+param_group] = grad_norms[param_group]
 
 		# Logging
 
@@ -220,7 +201,7 @@ def main(cfg: DictConfig):
 				del eval_rollout, eval_loss_td
 
 		if logger is not None:
-			for metric_name, metric_value in metrics_to_log.items():
+			for metric_name, metric_value in sorted(metrics_to_log.items()):
 				logger.log_scalar(metric_name, metric_value, collected_frames)
 	
 	logging.info("--- Training completed ---")

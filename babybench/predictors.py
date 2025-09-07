@@ -4,8 +4,9 @@ from tensordict import TensorDict
 from tensordict.nn import InteractionType, TensorDictModule
 import torch
 import torch.nn.functional as F
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from functools import partial
+from contextlib import nullcontext
 
 
 class ForwardInverseSurprisePredictor(TensorDictModule):
@@ -35,7 +36,9 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         action_high: float = 1.0,
         beta: float = 0.5,
         eta: float = 1.0,
-        dtype = torch.float32
+        dtype = torch.float32,
+        detach_next_features: bool = False,
+        clamp_surprise: Optional[float] | Optional[Tuple[float, float]] = None
     ):
         super().__init__(module=torch.nn.Identity(), in_keys=in_keys, 
                          out_keys=[("next", "reward"), "intrinsic_loss_fwd", "intrinsic_loss_inv"],
@@ -73,6 +76,18 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         self._action_low = torch.as_tensor(action_low, device=self.device)
         self._action_high = torch.as_tensor(action_high, device=self.device)
 
+        self._feats_next_context = torch.no_grad if detach_next_features else nullcontext
+
+        if clamp_surprise is None:
+            self._clamp_func = lambda x:x
+        else:
+            try:
+                len(clamp_surprise)
+            except:
+                self._clamp_func = partial(torch.clamp, min=-clamp_surprise, max=clamp_surprise)
+            else:
+                self._clamp_func = partial(torch.clamp, min=clamp_surprise[0], max=clamp_surprise[1])
+
     def forward(self, td: TensorDict, loss_td: TensorDict) -> TensorDict:
         # gather observation parts and move to predictor device
         obs_parts, obs_next_parts = [], []
@@ -88,7 +103,11 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
 
         # next features
         feats_t = self.feat_ext(obs_in)  # (B, feat_size) or (feat_size,)
-        feats_t_next = self.feat_ext(obs_next_in)  # (B, feat_size) or (feat_size,)
+
+        # Keep the next prediction detached so that feat_ext only receives backprop
+        # from feats_t
+        with self._feats_next_context():
+            feats_t_next = self.feat_ext(obs_next_in)  # (B, feat_size) or (feat_size,)
         
         if feats_t.ndim == 1:
             feats_t = feats_t.unsqueeze(0)
@@ -121,10 +140,13 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         L_all = self._beta * L_fwd + (1.0 - self._beta) * L_inv
 
         loss_td.set("loss_predictor", L_all)
+        loss_td.set("loss_inv", L_inv.detach())
+        loss_td.set("loss_fwd", L_fwd.detach())
         
         # intrinsic reward (detach, move to CPU)
         surprise = (self._eta / 2.0) * torch.linalg.vector_norm(feats_t_next_pred - feats_t_next, dim=-1)
         surprise = surprise.detach().unsqueeze(1)
+        surprise = self._clamp_func(surprise)
 
         reward = td["next", "reward"]
 

@@ -5,7 +5,7 @@ defaults:
 - predictor: forward_inverse
 - module: sac
 - loss: soft_sac_loss
-- optimizers: sac_adam
+- optimizers: sac_adamw
 - collector: multiasync
 - replay_buffer: default
 - _self_
