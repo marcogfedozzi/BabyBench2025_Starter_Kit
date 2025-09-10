@@ -78,18 +78,12 @@ def main(cfg: DictConfig):
 
 	# Training
 
-	pbar = tqdm(total=collector.total_frames)
+	pbar = tqdm(total=cfg.train_steps)
 	pbar_every = cfg.get("pbar_every", 1)
+	log_every = cfg.get("log_every", 1)
 
 	collected_obs = 0
 	prec_wc = 0
-	
-	def update_write_count(replay_buffer, prec_wc):
-		collected_frames = replay_buffer.write_count - prec_wc
-		prec_wc = replay_buffer.write_count
-		pbar.update(collected_frames)
-
-		return collected_frames, prec_wc
 
 	collection_start = time.time()
 	
@@ -107,13 +101,17 @@ def main(cfg: DictConfig):
 		collection_time = time.time() - collection_start
 
 		collector.update_policy_weights_() # Needed for aSync collection
-		collected_frames, prec_wc = update_write_count(replay_buffer, prec_wc)
+
+		_write_count = replay_buffer.write_count
+		collected_frames = _write_count - prec_wc
+		prec_wc = _write_count
 
 		if train_step % pbar_every == 0:
-			pbar.set_description(f"Training Step: {train_step}")
+			pbar.update(train_step)
+			pbar.set_description(f"Collected Frames: {str(_write_count).rjust(16)}")
 
 		metrics_to_log["replay_buffer/collected_frames"] = collected_frames
-		metrics_to_log["replay_buffer/write_count"] = replay_buffer.write_count
+		metrics_to_log["replay_buffer/write_count"] = _write_count
 
 		collected_obs += collected_frames
 		training_start_time = time.time()
@@ -121,14 +119,11 @@ def main(cfg: DictConfig):
 		# Sample from the replay buffer
 		td = replay_buffer.sample()
 
-		rlu.log_info_keys(cfg, td, metrics_to_log)
-
 		# Compute the loss
 		loss_td = loss_module(td)
 		td, loss_td = predictor(td, loss_td) # extra computation for intrinsic reward or else
 
 		# Update Networks
-
 		rlu.compute_grads(optimizers, loss_td, clip_grad_func)
 
 		if train_step % cfg.get('grad_log_every', 100) == 0:
@@ -142,6 +137,8 @@ def main(cfg: DictConfig):
 		
 		training_time = time.time() - training_start_time
 
+		rlu.log_info_keys(cfg, td, metrics_to_log)
+		
 		episode_end = td["next", "done"] if td["next", "done"].any() else td["next", "truncated"]
 
 		episode_rewards = td["next", "reward"][episode_end]
@@ -200,9 +197,11 @@ def main(cfg: DictConfig):
 
 				del eval_rollout, eval_loss_td
 
-		if logger is not None:
+		if logger is not None and train_step % log_every == 0:
 			for metric_name, metric_value in sorted(metrics_to_log.items()):
-				logger.log_scalar(metric_name, metric_value, collected_frames)
+				if isinstance(metric_value, torch.Tensor) and metric_value.ndim >= 1 and len(metric_value) > 1:
+					logger.log_histogram(metric_name, metric_value, step=train_step, bins=min(len(metric_value), 32))
+				logger.log_scalar(metric_name, metric_value, train_step)
 	
 	logging.info("--- Training completed ---")
 	end_time = time.time()

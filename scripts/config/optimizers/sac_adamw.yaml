@@ -9,13 +9,13 @@ optimizer_actor:
   _target_: torch.optim.AdamW
   lr: 1e-4
   fused: true
-  weight_decay: 1e-3
+  weight_decay: 1e-4
 
 optimizer_qvalue:
   _target_: torch.optim.AdamW
   fused: true
   lr: 3e-4
-  weight_decay: 1e-3
+  weight_decay: 1e-2
 
 optimizer_alpha:
   _target_: torch.optim.Adam

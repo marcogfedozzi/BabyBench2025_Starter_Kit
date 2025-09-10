@@ -8,7 +8,6 @@ from typing import List, Optional, Tuple
 from functools import partial
 from contextlib import nullcontext
 
-
 class ForwardInverseSurprisePredictor(TensorDictModule):
     """
     TensorDictModule wrapper around feat_extractor, forward and inverse predictors.
@@ -38,7 +37,8 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         eta: float = 1.0,
         dtype = torch.float32,
         detach_next_features: bool = False,
-        clamp_surprise: Optional[float] | Optional[Tuple[float, float]] = None
+        clamp_surprise: Optional[float] | Optional[Tuple[float, float]] = None,
+        log_net_outputs: bool = False,
     ):
         super().__init__(module=torch.nn.Identity(), in_keys=in_keys, 
                          out_keys=[("next", "reward"), "intrinsic_loss_fwd", "intrinsic_loss_inv"],
@@ -54,6 +54,7 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         self.inv_mod    = inverse_model.to(dtype)
 
         # loss/optim
+        # TODO: check if loss requires "target:" attribute
         self.fwd_loss_fn = forward_loss_fn
         self.inv_loss_fn = inverse_loss_fn
 
@@ -87,6 +88,9 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
                 self._clamp_func = partial(torch.clamp, min=-clamp_surprise, max=clamp_surprise)
             else:
                 self._clamp_func = partial(torch.clamp, min=clamp_surprise[0], max=clamp_surprise[1])
+
+    
+        self._log_net_outputs = log_net_outputs
 
     def forward(self, td: TensorDict, loss_td: TensorDict) -> TensorDict:
         # gather observation parts and move to predictor device
@@ -125,8 +129,8 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         fwd_in = torch.cat([feats_t, actions], dim=-1)
         feats_t_next_pred = self.fwd_mod(fwd_in)
 
-        # map action_pred to action range (if needed)
-        action_pred = torch.sigmoid(action_pred) * (self._action_high - self._action_low) + self._action_low
+        # map action_pred to action range
+        action_pred = (F.normalize(action_pred, p=2, dim=-1, eps=1e-8)+1)/2 * (self._action_high - self._action_low) + self._action_low
 
         # cosine: normalize
         feats_t_next_n = F.normalize(feats_t_next, p=2, dim=-1, eps=1e-8)
@@ -142,9 +146,15 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         loss_td.set("loss_predictor", L_all)
         loss_td.set("loss_inv", L_inv.detach())
         loss_td.set("loss_fwd", L_fwd.detach())
+
+        if self._log_net_outputs:
+            td.set(("predictor","feats"),           F.normalize(feats_t.detach().cpu(), p=2, dim=-1, eps=1e-8))
+            td.set(("predictor","feats_next"),      feats_t_next_n.detach().cpu())
+            td.set(("predictor","feats_next_pred"), feats_t_next_pred_n.detach().cpu())
+            td.set(("predictor","action_pred"),     action_pred.detach().cpu())
         
-        # intrinsic reward (detach, move to CPU)
-        surprise = (self._eta / 2.0) * torch.linalg.vector_norm(feats_t_next_pred - feats_t_next, dim=-1)
+        # intrinsic reward (detach)
+        surprise = (self._eta / 2.0) * torch.linalg.vector_norm(feats_t_next_pred_n - feats_t_next_n, dim=-1)
         surprise = surprise.detach().unsqueeze(1)
         surprise = self._clamp_func(surprise)
 

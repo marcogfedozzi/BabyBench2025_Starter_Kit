@@ -24,13 +24,7 @@ from babybench import utils as bb_utils
 from torchrl.record.loggers import Logger, WandbLogger
 import os
 from torchrl.envs import default_info_dict_reader, EnvBase, EnvCreator
-import wandb
-
-
-
-def _check_key(cfg: DictConfig, key: str):
-	return key in cfg and getattr(cfg, key) is not None
-
+import tensordict
 
 class DuplicateFilter:
 	"""
@@ -62,7 +56,7 @@ def instantiate_transforms(transform_cfg: DictConfig) -> T.Compose:
 	:return: A list of instantiated transforms.
 	"""
 
-	logging.info(f"Instantiating Transforms: {transform_cfg.keys()}")
+	logging.debug(f"Instantiating Transforms: {transform_cfg.keys()}")
 
 	transforms: List[T.Transform] = []
 
@@ -77,7 +71,7 @@ def instantiate_transforms(transform_cfg: DictConfig) -> T.Compose:
 		for _, cb_conf in transform_cfg.items():
 			if isinstance(cb_conf, DictConfig) and "_target_" in cb_conf:
 
-				logging.info(f"Instantiating transform <{cb_conf._target_}>")
+				logging.debug(f"Instantiating transform <{cb_conf._target_}>")
 
 				"""Unnecessary right now
 				if "ObservationNorm" in cb_conf._target_ and (cb_conf.get("loc") is None or cb_conf.get("scale") is None):
@@ -98,7 +92,7 @@ def init_stats(env: TransformedEnv, num_iter: int = 1000):
 	
 	for trsf in env.transform:
 		if isinstance(trsf, T.ObservationNorm):
-			logging.info(f"Initializing transform {trsf} with {num_iter} iterations")
+			logging.debug(f"Initializing transform {trsf} with {num_iter} iterations")
 			trsf.init_stats(num_iter=num_iter)
 
 def register_script_resolvers():
@@ -109,6 +103,7 @@ def register_script_resolvers():
 	OmegaConf.register_new_resolver("get_device", lambda: torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 	OmegaConf.register_new_resolver("type",  lambda x: hydra.utils.get_object(x))
 	OmegaConf.register_new_resolver("cls",   lambda x: hydra.utils.get_class(x))
+	OmegaConf.register_new_resolver("tuple", lambda *args: tuple(args))
 
 
 def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: bool = False, reward_wrapper: gym.Wrapper = None) -> GymEnv:
@@ -139,7 +134,7 @@ def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: boo
 		env = GymWrapper(env)
 
 	if _info_keys:
-		logging.info(f"Setting info dict with keys {_info_keys}")
+		logging.debug(f"Setting info dict with keys {_info_keys}")
 		env.set_info_dict_reader(default_info_dict_reader(_info_keys))
 
 	_seed = cfg.eval.get("seed", -1) if is_eval else cfg.env.get("seed", -1)
@@ -488,12 +483,14 @@ def log_info_keys(cfg: DictConfig, td: TensorDict, logging_dict: Dict[str, Any])
 
 	info_keys = cfg.env.get("info_keys", [])
 
+	_flat_td = td.flatten_keys(separator='/')
+
 	if info_keys is None:
 		return
 
 	for key in info_keys:
-		if not key in td.keys():
+		if not key in _flat_td.keys():
 			# Do not issue warning or it will flood the terminal, simply ignore
 			continue
 		
-		logging_dict[f"info/{key}"] = td[key].mean().item()
+		logging_dict[f"info/{key}"] = _flat_td[key][0].cpu()

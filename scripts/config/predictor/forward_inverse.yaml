@@ -50,3 +50,4 @@ beta: 0.2
 eta: 0.1
 detach_next_features: true
 clamp_surprise: 10
+log_net_outputs: false
