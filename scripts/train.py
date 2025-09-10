@@ -7,6 +7,7 @@ import yaml
 import hydra
 import logging
 from babybench import rl_utils as rlu
+from tensordict import TensorDict
 
 from omegaconf import DictConfig
 
@@ -119,9 +120,13 @@ def main(cfg: DictConfig):
 		# Sample from the replay buffer
 		td = replay_buffer.sample()
 
+		# Compute the intrinsic reward
+		td, loss_pred = predictor(td) # extra computation for intrinsic reward or else
+
 		# Compute the loss
-		loss_td = loss_module(td)
-		td, loss_td = predictor(td, loss_td) # extra computation for intrinsic reward or else
+		loss_td: TensorDict = loss_module(td)
+
+		loss_td.update(loss_pred)
 
 		# Update Networks
 		rlu.compute_grads(optimizers, loss_td, clip_grad_func)
@@ -178,9 +183,9 @@ def main(cfg: DictConfig):
 					break_when_any_done=True
 				)
 
+				eval_rollout, eval_loss_pre = predictor(eval_rollout)
 				eval_loss_td = loss_module(eval_rollout.to(agent.device))
-
-				eval_rollout, eval_loss_td = predictor(eval_rollout, eval_loss_td)
+				eval_loss_td.update(eval_loss_pre)
 
 				eval_time = time.time() - eval_start
 				eval_reward = eval_rollout["next", "reward"].sum(-2).mean().item()

@@ -92,7 +92,7 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
     
         self._log_net_outputs = log_net_outputs
 
-    def forward(self, td: TensorDict, loss_td: TensorDict) -> TensorDict:
+    def forward(self, td: TensorDict) -> TensorDict:
         # gather observation parts and move to predictor device
         obs_parts, obs_next_parts = [], []
         
@@ -143,6 +143,7 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
 
         L_all = self._beta * L_fwd + (1.0 - self._beta) * L_inv
 
+        loss_td = TensorDict(batch_size=[], device=td.device)
         loss_td.set("loss_predictor", L_all)
         loss_td.set("loss_inv", L_inv.detach())
         loss_td.set("loss_fwd", L_fwd.detach())
@@ -158,7 +159,7 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         surprise = surprise.detach().unsqueeze(1)
         surprise = self._clamp_func(surprise)
 
-        reward = td["next", "reward"]
+        reward = td.get(("next", "reward"), torch.zeros(surprise.shape))
 
         td.set(("next", "reward"), surprise.to(reward.device) + reward)
         # losses already set above
