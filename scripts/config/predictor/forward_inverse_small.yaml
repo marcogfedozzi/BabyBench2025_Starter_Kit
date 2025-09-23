@@ -1,0 +1,55 @@
+_target_: babybench.predictors.ForwardInverseSurprisePredictor
+in_keys:
+  - touch
+dtype: ${type:torch.float32}
+
+feat_extractor:
+  _target_: torchrl.modules.MLP
+  out_features: 32
+  num_cells: [256,64]
+  activation_class: ${cls:torch.nn.LeakyReLU} # custom resolver
+  device: ${device}
+  dropout: 0.0
+
+forward_model:
+  _target_: torchrl.modules.MLP
+  out_features: ${predictor.feat_extractor.out_features}
+  num_cells: [64,128]
+  activation_class: ${cls:torch.nn.LeakyReLU} # custom resolver
+  device: ${device}
+  dropout: 0.0
+
+inverse_model:
+  _target_: torchrl.modules.MLP
+  out_features: ${env_act_shape:}
+  num_cells: [64]
+  activation_class: ${cls:torch.nn.LeakyReLU} # custom resolver
+  device: ${device}
+  dropout: 0.0
+
+forward_loss_fn:
+  _target_: torch.nn.CosineEmbeddingLoss
+  margin: 0.0
+  reduction: mean
+
+inverse_loss_fn:
+  _target_: torch.nn.MSELoss
+  reduction: mean
+
+optim:
+  _partial_: true
+  _target_: torch.optim.Adam
+  lr: 1e-4
+
+clip_grad: 1.0
+
+action_low: ${env_act_space_low:} # custom resolver
+action_high: ${env_act_space_high:} # custom resolver
+
+beta: 0.3
+eta: 1
+
+detach_current_features: false
+detach_next_features: false
+clamp_surprise: null
+log_net_outputs: false

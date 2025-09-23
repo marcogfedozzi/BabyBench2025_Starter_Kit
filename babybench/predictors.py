@@ -36,6 +36,7 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         beta: float = 0.5,
         eta: float = 1.0,
         dtype = torch.float32,
+        detach_current_features: bool = False,
         detach_next_features: bool = False,
         clamp_surprise: Optional[float] | Optional[Tuple[float, float]] = None,
         log_net_outputs: bool = False,
@@ -76,7 +77,11 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
 
         self._action_low = torch.as_tensor(action_low, device=self.device)
         self._action_high = torch.as_tensor(action_high, device=self.device)
+        self._action_center = (self._action_high + self._action_low) / 2.0
+        self._action_scale = (self._action_high - self._action_low) / 2.0
 
+        assert not (detach_current_features and detach_next_features), "At least one among current and next feature should not be detached"
+        self._feats_current_context = torch.no_grad if detach_current_features else nullcontext
         self._feats_next_context = torch.no_grad if detach_next_features else nullcontext
 
         if clamp_surprise is None:
@@ -105,8 +110,9 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         obs_in = torch.cat(obs_parts, dim=-1)
         obs_next_in = torch.cat(obs_next_parts, dim=-1)
 
-        # next features
-        feats_t = self.feat_ext(obs_in)  # (B, feat_size) or (feat_size,)
+        # current feature
+        with self._feats_current_context():
+            feats_t = self.feat_ext(obs_in)  # (B, feat_size) or (feat_size,)
 
         # Keep the next prediction detached so that feat_ext only receives backprop
         # from feats_t
@@ -130,7 +136,8 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         feats_t_next_pred = self.fwd_mod(fwd_in)
 
         # map action_pred to action range
-        action_pred = (F.normalize(action_pred, p=2, dim=-1, eps=1e-8)+1)/2 * (self._action_high - self._action_low) + self._action_low
+        action_pred = F.tanh(action_pred) * self._action_scale + self._action_center
+        # action_pred = (F.normalize(action_pred, p=2, dim=-1, eps=1e-8)+1)/2 * (self._action_high - self._action_low) + self._action_low
 
         # cosine: normalize
         feats_t_next_n = F.normalize(feats_t_next, p=2, dim=-1, eps=1e-8)

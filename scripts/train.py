@@ -189,7 +189,7 @@ def main(cfg: DictConfig):
 
 				eval_time = time.time() - eval_start
 				eval_reward = eval_rollout["next", "reward"].sum(-2).mean().item()
-				metrics_to_log["eval/reward"] = eval_reward
+				metrics_to_log["eval/episode_reward"] = eval_reward
 				metrics_to_log["eval/time"] = eval_time
 				
 				metrics_to_log["eval/action_magnitude_mean"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
