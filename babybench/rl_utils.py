@@ -191,12 +191,6 @@ def make_agent(cfg: DictConfig, env: GymEnv) -> TensorDictModule:
 	
 	return ac_module
 
-"""
-def register_loss_resolvers(module: TensorDict, loss_module: LossModule):
-	OmegaConf.register_new_resolver("loss_log_alpha", lambda: [loss_module.log_alpha], replace=True)
-	OmegaConf.register_new_resolver("agent_policy_parameters", lambda: module.get_policy_operator().parameters(), replace=True)
-	OmegaConf.register_new_resolver("agent_critic_parameters", lambda: module.get_critic_operator().parameters(), replace=True)
-"""
 
 def make_loss(cfg: DictConfig, module: TensorDictModule) -> Tuple[LossModule, Optional[TargetNetUpdater]]:
 	"""
@@ -344,9 +338,11 @@ def make_logger(cfg: DictConfig) -> Logger:
 	"""
 	Create the logger
 	"""
-	
+	kwargs = {}
 	wandb_kwargs = cfg.logger.get("wandb_kwargs", {})
 	if wandb_kwargs:
+		wandb_kwargs = dict(wandb_kwargs)
+		wandb_kwargs.update({"config": dict(cfg)})
 		kwargs = {"wandb_kwargs": wandb_kwargs}
 
 	return get_logger(logger_type=cfg.logger.logger_type,
@@ -443,7 +439,6 @@ def log_model(module: TensorDictModule, logger: Logger, step: int, module_name="
 		else:
 			# optional: log an indicator that grad is missing
 			logger.log_scalar(f"{module_name}/grads/{name}", 0, step=step)
-			
 
 def save_model(cfg: DictConfig, save_dir: str, logger: Logger, agent:TensorDictModule, loss_module: LossModule, optimizers: Dict[str, torch.optim.Optimizer], predictor=None):
 	"""

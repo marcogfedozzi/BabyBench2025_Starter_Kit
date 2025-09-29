@@ -108,7 +108,7 @@ def main(cfg: DictConfig):
 		prec_wc = _write_count
 
 		if train_step % pbar_every == 0:
-			pbar.update(train_step)
+			pbar.update(pbar_every)
 			pbar.set_description(f"Collected Frames: {str(_write_count).rjust(16)}")
 
 		metrics_to_log["replay_buffer/collected_frames"] = collected_frames
@@ -144,9 +144,9 @@ def main(cfg: DictConfig):
 
 		rlu.log_info_keys(cfg, td, metrics_to_log)
 		
-		episode_end = td["next", "done"] if td["next", "done"].any() else td["next", "truncated"]
-
-		episode_rewards = td["next", "reward"][episode_end]
+		episode_end = td["next", "done"] if td["next", "done"].any() else td["next", "truncated"]\
+		
+		#episode_rewards = td["next", "reward"][episode_end]
 
 		# log the norm of the action vector, averaged across the batch dim
 		metrics_to_log["train/action_magnitude_mean"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
@@ -154,13 +154,15 @@ def main(cfg: DictConfig):
 
 		# Logging
 
-		if len(episode_rewards) > 0:
-			metrics_to_log["train/reward"] = td["next", "reward"].mean().item()
-			#metrics_to_log["train/reward"] = episode_rewards.mean().item()
-			if ("next", "step_count") in td and ("next", "episode_reward") in td:
-				episode_length = td["next", "step_count"][episode_end]
-				metrics_to_log["train/episode_reward"] = td["next", "episode_reward"].mean().item()
-				metrics_to_log["train/episode_length"] = episode_length.sum().item()/len(episode_length)
+		#if len(episode_rewards) > 0:
+		metrics_to_log["train/reward"] = td["next", "reward"].mean().item()
+		#metrics_to_log["train/reward"] = episode_rewards.mean().item()
+		if episode_end.any() and ("next", "step_count") in td:
+			episode_length = td["next", "step_count"][episode_end]
+			metrics_to_log["train/episode_length"] = episode_length.sum().item()/len(episode_length)
+			
+		if  ("next", "episode_reward") in td:
+			metrics_to_log["train/episode_reward"] = td["next", "episode_reward"].mean().item()
 		
 		if collected_obs >= collector.init_random_frames:
 			for k, v in loss_td.items():
@@ -192,8 +194,9 @@ def main(cfg: DictConfig):
 				metrics_to_log["eval/episode_reward"] = eval_reward
 				metrics_to_log["eval/time"] = eval_time
 				
-				metrics_to_log["eval/action_magnitude_mean"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
-				metrics_to_log["eval/action_magnitude_std"] = torch.linalg.vector_norm(td["action"], dim=-1).std()
+				metrics_to_log["eval/action_magnitude_mean"] = torch.linalg.vector_norm(eval_rollout["action"], dim=-1).mean()
+				metrics_to_log["eval/action_magnitude_std"] = torch.linalg.vector_norm(eval_rollout["action"], dim=-1).std()
+				metrics_to_log["eval/action"] = eval_rollout["action"]
 				
 				for k, v in eval_loss_td.items():
 					metrics_to_log[f"eval/{k}"] = v.detach().item()
@@ -205,7 +208,7 @@ def main(cfg: DictConfig):
 		if logger is not None and train_step % log_every == 0:
 			for metric_name, metric_value in sorted(metrics_to_log.items()):
 				if isinstance(metric_value, torch.Tensor) and metric_value.ndim >= 1 and len(metric_value) > 1:
-					logger.log_histogram(metric_name, metric_value, step=train_step, bins=min(len(metric_value), 32))
+					logger.log_histogram(metric_name, metric_value.cpu(), step=train_step, bins=min(len(metric_value), 16))
 				logger.log_scalar(metric_name, metric_value, train_step)
 	
 	logging.info("--- Training completed ---")
