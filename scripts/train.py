@@ -196,7 +196,7 @@ def main(cfg: DictConfig):
 				
 				metrics_to_log["eval/action_magnitude_mean"] = torch.linalg.vector_norm(eval_rollout["action"], dim=-1).mean()
 				metrics_to_log["eval/action_magnitude_std"] = torch.linalg.vector_norm(eval_rollout["action"], dim=-1).std()
-				metrics_to_log["eval/action"] = eval_rollout["action"]
+				#metrics_to_log["eval/action"] = eval_rollout["action"]
 				
 				for k, v in eval_loss_td.items():
 					metrics_to_log[f"eval/{k}"] = v.detach().item()
