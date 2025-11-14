@@ -166,7 +166,7 @@ def main(cfg: DictConfig):
 		metrics_to_log["train/action_magnitude_std"] 	= torch.linalg.vector_norm(td["action"], dim=-1).std()
 
 		for param_group in grad_norms:
-			metrics_to_log["info/"+param_group] = grad_norms[param_group]
+			metrics_to_log["info/"+param_id_to_name[param_group]] = grad_norms[param_group]
 
 		# Logging
 
