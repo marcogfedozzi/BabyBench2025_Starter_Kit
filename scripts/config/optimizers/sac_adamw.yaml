@@ -6,25 +6,24 @@
 # For SACLoss the losses are: loss_actor, loss_qvalue, loss_alpha -> actor, qvalue, alpha -> optimizer_actor, ...
 
 optimizer_actor:
-  _target_: torch.optim.Adam
+  _target_: torch.optim.AdamW
   lr: 1e-4
   fused: true
-#  params: ${agent_policy_parameters:} # custom resolver
+  weight_decay: 1e-3
 
 optimizer_qvalue:
-  _target_: torch.optim.Adam
+  _target_: torch.optim.AdamW
   fused: true
   lr: 3e-4
-#  params: ${agent_critic_parameters:} # custom resolver
+  weight_decay: 1e-2
 
 optimizer_alpha:
   _target_: torch.optim.Adam
   fused: true
-  lr: 1e-5
-#  params: ${loss_log_alpha:} # custom resolver
+  lr: 3e-5
 
 clip_actor: 1.0
 
-clip_qvalue: 1.0
+clip_qvalue: 0.5
 
-clip_alpha: null
+clip_alpha: 1.0

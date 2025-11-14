@@ -7,6 +7,7 @@ import yaml
 import hydra
 import logging
 from babybench import rl_utils as rlu
+from tensordict import TensorDict
 
 from omegaconf import DictConfig
 
@@ -78,30 +79,12 @@ def main(cfg: DictConfig):
 
 	# Training
 
-	pbar = tqdm(total=collector.total_frames)
+	pbar = tqdm(total=cfg.train_steps)
 	pbar_every = cfg.get("pbar_every", 1)
+	log_every = cfg.get("log_every", 1)
 
 	collected_obs = 0
 	prec_wc = 0
-
-	param_id_to_name = {}
-	# agent params
-	for n, p in agent.named_parameters():
-		param_id_to_name[id(p)] = f'sac/{n}'
-	# predictor params
-	if predictor is not None:
-		for n, p in predictor.named_parameters():
-			param_id_to_name[id(p)] = f'predictor/{n}'
-	# loss_module params
-	for n, p in loss_module.named_parameters():
-		param_id_to_name[id(p)] = f'loss/{n}'
-	
-	def update_write_count(replay_buffer, prec_wc):
-		collected_frames = replay_buffer.write_count - prec_wc
-		prec_wc = replay_buffer.write_count
-		pbar.update(collected_frames)
-
-		return collected_frames, prec_wc
 
 	collection_start = time.time()
 	
@@ -119,13 +102,17 @@ def main(cfg: DictConfig):
 		collection_time = time.time() - collection_start
 
 		collector.update_policy_weights_() # Needed for aSync collection
-		collected_frames, prec_wc = update_write_count(replay_buffer, prec_wc)
+
+		_write_count = replay_buffer.write_count
+		collected_frames = _write_count - prec_wc
+		prec_wc = _write_count
 
 		if train_step % pbar_every == 0:
-			pbar.set_description(f"Training Step: {train_step}")
+			pbar.update(pbar_every)
+			pbar.set_description(f"Collected Frames: {str(_write_count).rjust(16)}")
 
 		metrics_to_log["replay_buffer/collected_frames"] = collected_frames
-		metrics_to_log["replay_buffer/write_count"] = replay_buffer.write_count
+		metrics_to_log["replay_buffer/write_count"] = _write_count
 
 		collected_obs += collected_frames
 		training_start_time = time.time()
@@ -133,50 +120,49 @@ def main(cfg: DictConfig):
 		# Sample from the replay buffer
 		td = replay_buffer.sample()
 
-		rlu.log_info_keys(cfg, td, metrics_to_log)
+		# Compute the intrinsic reward
+		td, loss_pred = predictor(td) # extra computation for intrinsic reward or else
 
 		# Compute the loss
-		loss_td = loss_module(td)
-		td, loss_td = predictor(td, loss_td) # extra computation for intrinsic reward or else
+		loss_td: TensorDict = loss_module(td)
+
+		loss_td.update(loss_pred)
 
 		# Update Networks
+		rlu.compute_grads(optimizers, loss_td, clip_grad_func)
 
-		# build id->name mapping for parameters (once)
-		
-
-		# request per-parameter grad norms from step_optimizers (pass mapping for names)
-		grad_norms, per_param_grads = rlu.step_optimizers(optimizers, loss_td, clip_grad_func, store_per_param_grad=True, param_id_to_name=param_id_to_name)
-
-		# log per-parameter grads at a modest frequency to avoid spamming the logger
 		if train_step % cfg.get('grad_log_every', 100) == 0:
-			for key, gnorm in per_param_grads.items():
-				metrics_to_log[f"grads/{key}"] = gnorm
+			rlu.log_model(loss_module, logger, train_step, "agent")
+			rlu.log_model(predictor, logger, train_step, "predictor")
+
+		rlu.step_optimizers(optimizers)
 
 		if target_net_updater is not None:            
 			target_net_updater.step() # Polyak update
 		
 		training_time = time.time() - training_start_time
 
-		episode_end = td["next", "done"] if td["next", "done"].any() else td["next", "truncated"]
-
-		episode_rewards = td["next", "reward"][episode_end]
+		rlu.log_info_keys(cfg, td, metrics_to_log)
+		
+		episode_end = td["next", "done"] if td["next", "done"].any() else td["next", "truncated"]\
+		
+		#episode_rewards = td["next", "reward"][episode_end]
 
 		# log the norm of the action vector, averaged across the batch dim
 		metrics_to_log["train/action_magnitude_mean"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
 		metrics_to_log["train/action_magnitude_std"] 	= torch.linalg.vector_norm(td["action"], dim=-1).std()
 
-		for param_group in grad_norms:
-			metrics_to_log["info/"+param_id_to_name[param_group]] = grad_norms[param_group]
-
 		# Logging
 
-		if len(episode_rewards) > 0:
-			metrics_to_log["train/reward"] = td["next", "reward"].mean().item()
-			#metrics_to_log["train/reward"] = episode_rewards.mean().item()
-			if ("next", "step_count") in td and ("next", "episode_reward") in td:
-				episode_length = td["next", "step_count"][episode_end]
-				metrics_to_log["train/episode_reward"] = td["next", "episode_reward"].mean().item()
-				metrics_to_log["train/episode_length"] = episode_length.sum().item()/len(episode_length)
+		#if len(episode_rewards) > 0:
+		metrics_to_log["train/reward"] = td["next", "reward"].mean().item()
+		#metrics_to_log["train/reward"] = episode_rewards.mean().item()
+		if episode_end.any() and ("next", "step_count") in td:
+			episode_length = td["next", "step_count"][episode_end]
+			metrics_to_log["train/episode_length"] = episode_length.sum().item()/len(episode_length)
+			
+		if  ("next", "episode_reward") in td:
+			metrics_to_log["train/episode_reward"] = td["next", "episode_reward"].mean().item()
 		
 		if collected_obs >= collector.init_random_frames:
 			for k, v in loss_td.items():
@@ -199,17 +185,18 @@ def main(cfg: DictConfig):
 					break_when_any_done=True
 				)
 
+				eval_rollout, eval_loss_pre = predictor(eval_rollout)
 				eval_loss_td = loss_module(eval_rollout.to(agent.device))
-
-				eval_rollout, eval_loss_td = predictor(eval_rollout, eval_loss_td)
+				eval_loss_td.update(eval_loss_pre)
 
 				eval_time = time.time() - eval_start
 				eval_reward = eval_rollout["next", "reward"].sum(-2).mean().item()
-				metrics_to_log["eval/reward"] = eval_reward
+				metrics_to_log["eval/episode_reward"] = eval_reward
 				metrics_to_log["eval/time"] = eval_time
 				
-				metrics_to_log["eval/action_magnitude_mean"] = torch.linalg.vector_norm(td["action"], dim=-1).mean()
-				metrics_to_log["eval/action_magnitude_std"] = torch.linalg.vector_norm(td["action"], dim=-1).std()
+				metrics_to_log["eval/action_magnitude_mean"] = torch.linalg.vector_norm(eval_rollout["action"], dim=-1).mean()
+				metrics_to_log["eval/action_magnitude_std"] = torch.linalg.vector_norm(eval_rollout["action"], dim=-1).std()
+				#metrics_to_log["eval/action"] = eval_rollout["action"]
 				
 				for k, v in eval_loss_td.items():
 					metrics_to_log[f"eval/{k}"] = v.detach().item()
@@ -218,9 +205,11 @@ def main(cfg: DictConfig):
 
 				del eval_rollout, eval_loss_td
 
-		if logger is not None:
-			for metric_name, metric_value in metrics_to_log.items():
-				logger.log_scalar(metric_name, metric_value, collected_frames)
+		if logger is not None and train_step % log_every == 0:
+			for metric_name, metric_value in sorted(metrics_to_log.items()):
+				if isinstance(metric_value, torch.Tensor) and metric_value.ndim >= 1 and len(metric_value) > 1:
+					logger.log_histogram(metric_name, metric_value.cpu(), step=train_step, bins=min(len(metric_value), 16))
+				logger.log_scalar(metric_name, metric_value, train_step)
 	
 	logging.info("--- Training completed ---")
 	end_time = time.time()

@@ -6,10 +6,11 @@ defaults:
 - _self_
 
 obs_modality: touch
-train_steps: 2_000
+train_steps: 10_000
 init_rand_frames: 500
 pbar_every: 1
 grad_log_every: 100
+log_every: 1
 
 eval:
   seed: 0
@@ -20,9 +21,11 @@ eval:
 env:
   num_envs: 2
   init_stats_iter: 100
-  # info_keys:
-  #   - intrinsic_loss_fwd
-  #   - intrinsic_loss_inv
+  info_keys:
+    - predictor/feats
+    - predictor/feats_next
+    - predictor/feats_next_pred
+    - predictor/action_pred
 
 save_models: false
 
@@ -30,3 +33,6 @@ replay_buffer:
   shared: true
   prefetch: null
   batch_size: 32
+
+predictor:
+  log_net_outputs: true

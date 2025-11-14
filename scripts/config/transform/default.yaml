@@ -1,6 +1,6 @@
 defaults:
+  - step_counter
+ # - reward_sum
  # - observation_norm
  # - select
-  - step_counter
  # - tofloat32
- # - reward_sum

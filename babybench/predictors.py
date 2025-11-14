@@ -4,9 +4,9 @@ from tensordict import TensorDict
 from tensordict.nn import InteractionType, TensorDictModule
 import torch
 import torch.nn.functional as F
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from functools import partial
-
+from contextlib import nullcontext
 
 class ForwardInverseSurprisePredictor(TensorDictModule):
     """
@@ -31,12 +31,15 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         optim: torch.optim.Optimizer,
         clip_grad: Optional[float],
         in_keys: List[str] | str,
-        feat_size: int,
         action_low: float = -1.0,
         action_high: float = 1.0,
         beta: float = 0.5,
         eta: float = 1.0,
-        dtype = torch.float32
+        dtype = torch.float32,
+        detach_current_features: bool = False,
+        detach_next_features: bool = False,
+        clamp_surprise: Optional[float] | Optional[Tuple[float, float]] = None,
+        log_net_outputs: bool = False,
     ):
         super().__init__(module=torch.nn.Identity(), in_keys=in_keys, 
                          out_keys=[("next", "reward"), "intrinsic_loss_fwd", "intrinsic_loss_inv"],
@@ -52,6 +55,7 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         self.inv_mod    = inverse_model.to(dtype)
 
         # loss/optim
+        # TODO: check if loss requires "target:" attribute
         self.fwd_loss_fn = forward_loss_fn
         self.inv_loss_fn = inverse_loss_fn
 
@@ -73,8 +77,27 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
 
         self._action_low = torch.as_tensor(action_low, device=self.device)
         self._action_high = torch.as_tensor(action_high, device=self.device)
+        self._action_center = (self._action_high + self._action_low) / 2.0
+        self._action_scale = (self._action_high - self._action_low) / 2.0
 
-    def forward(self, td: TensorDict, loss_td: TensorDict) -> TensorDict:
+        assert not (detach_current_features and detach_next_features), "At least one among current and next feature should not be detached"
+        self._feats_current_context = torch.no_grad if detach_current_features else nullcontext
+        self._feats_next_context = torch.no_grad if detach_next_features else nullcontext
+
+        if clamp_surprise is None:
+            self._clamp_func = lambda x:x
+        else:
+            try:
+                len(clamp_surprise)
+            except:
+                self._clamp_func = partial(torch.clamp, min=-clamp_surprise, max=clamp_surprise)
+            else:
+                self._clamp_func = partial(torch.clamp, min=clamp_surprise[0], max=clamp_surprise[1])
+
+    
+        self._log_net_outputs = log_net_outputs
+
+    def forward(self, td: TensorDict) -> TensorDict:
         # gather observation parts and move to predictor device
         obs_parts, obs_next_parts = [], []
         
@@ -87,9 +110,14 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         obs_in = torch.cat(obs_parts, dim=-1)
         obs_next_in = torch.cat(obs_next_parts, dim=-1)
 
-        # next features
-        feats_t = self.feat_ext(obs_in)  # (B, feat_size) or (feat_size,)
-        feats_t_next = self.feat_ext(obs_next_in)  # (B, feat_size) or (feat_size,)
+        # current feature
+        with self._feats_current_context():
+            feats_t = self.feat_ext(obs_in)  # (B, feat_size) or (feat_size,)
+
+        # Keep the next prediction detached so that feat_ext only receives backprop
+        # from feats_t
+        with self._feats_next_context():
+            feats_t_next = self.feat_ext(obs_next_in)  # (B, feat_size) or (feat_size,)
         
         if feats_t.ndim == 1:
             feats_t = feats_t.unsqueeze(0)
@@ -107,8 +135,9 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
         fwd_in = torch.cat([feats_t, actions], dim=-1)
         feats_t_next_pred = self.fwd_mod(fwd_in)
 
-        # map action_pred to action range (if needed)
-        action_pred = torch.sigmoid(action_pred) * (self._action_high - self._action_low) + self._action_low
+        # map action_pred to action range
+        action_pred = F.tanh(action_pred) * self._action_scale + self._action_center
+        # action_pred = (F.normalize(action_pred, p=2, dim=-1, eps=1e-8)+1)/2 * (self._action_high - self._action_low) + self._action_low
 
         # cosine: normalize
         feats_t_next_n = F.normalize(feats_t_next, p=2, dim=-1, eps=1e-8)
@@ -121,13 +150,24 @@ class ForwardInverseSurprisePredictor(TensorDictModule):
 
         L_all = self._beta * L_fwd + (1.0 - self._beta) * L_inv
 
+        loss_td = TensorDict(batch_size=[], device=td.device)
         loss_td.set("loss_predictor", L_all)
+        loss_td.set("loss_inv", L_inv.detach())
+        loss_td.set("loss_fwd", L_fwd.detach())
+
+        if self._log_net_outputs:
+            td.set(("predictor","feats"),           F.normalize(feats_t.detach().cpu(), p=2, dim=-1, eps=1e-8))
+            td.set(("predictor","feats_next"),      feats_t_next_n.detach().cpu())
+            td.set(("predictor","feats_next_pred"), feats_t_next_pred_n.detach().cpu())
+            td.set(("predictor","action_pred"),     action_pred.detach().cpu())
         
-        # intrinsic reward (detach, move to CPU)
+        # intrinsic reward (detach)
+        #surprise = (self._eta / 2.0) * torch.linalg.vector_norm(feats_t_next_pred_n - feats_t_next_n, dim=-1)
         surprise = (self._eta / 2.0) * torch.linalg.vector_norm(feats_t_next_pred - feats_t_next, dim=-1)
         surprise = surprise.detach().unsqueeze(1)
+        surprise = self._clamp_func(surprise)
 
-        reward = td["next", "reward"]
+        reward = td.get(("next", "reward"), torch.zeros(surprise.shape))
 
         td.set(("next", "reward"), surprise.to(reward.device) + reward)
         # losses already set above

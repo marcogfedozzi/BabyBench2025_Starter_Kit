@@ -21,17 +21,10 @@ from torchrl.envs.libs.gym import GymEnv, GymWrapper
 from torchrl.record.loggers.utils import get_logger, generate_exp_name
 from typing import Any
 from babybench import utils as bb_utils
-from torchrl.record.loggers.common import Logger
+from torchrl.record.loggers import Logger, WandbLogger
 import os
 from torchrl.envs import default_info_dict_reader, EnvBase, EnvCreator
-
-
-from torchrl.collectors import SyncDataCollector
-
-
-def _check_key(cfg: DictConfig, key: str):
-	return key in cfg and getattr(cfg, key) is not None
-
+import tensordict
 
 class DuplicateFilter:
 	"""
@@ -63,7 +56,7 @@ def instantiate_transforms(transform_cfg: DictConfig) -> T.Compose:
 	:return: A list of instantiated transforms.
 	"""
 
-	logging.info(f"Instantiating Transforms: {transform_cfg.keys()}")
+	logging.debug(f"Instantiating Transforms: {transform_cfg.keys()}")
 
 	transforms: List[T.Transform] = []
 
@@ -78,7 +71,7 @@ def instantiate_transforms(transform_cfg: DictConfig) -> T.Compose:
 		for _, cb_conf in transform_cfg.items():
 			if isinstance(cb_conf, DictConfig) and "_target_" in cb_conf:
 
-				logging.info(f"Instantiating transform <{cb_conf._target_}>")
+				logging.debug(f"Instantiating transform <{cb_conf._target_}>")
 
 				"""Unnecessary right now
 				if "ObservationNorm" in cb_conf._target_ and (cb_conf.get("loc") is None or cb_conf.get("scale") is None):
@@ -99,7 +92,7 @@ def init_stats(env: TransformedEnv, num_iter: int = 1000):
 	
 	for trsf in env.transform:
 		if isinstance(trsf, T.ObservationNorm):
-			logging.info(f"Initializing transform {trsf} with {num_iter} iterations")
+			logging.debug(f"Initializing transform {trsf} with {num_iter} iterations")
 			trsf.init_stats(num_iter=num_iter)
 
 def register_script_resolvers():
@@ -110,6 +103,7 @@ def register_script_resolvers():
 	OmegaConf.register_new_resolver("get_device", lambda: torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 	OmegaConf.register_new_resolver("type",  lambda x: hydra.utils.get_object(x))
 	OmegaConf.register_new_resolver("cls",   lambda x: hydra.utils.get_class(x))
+	OmegaConf.register_new_resolver("tuple", lambda *args: tuple(args))
 
 
 def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: bool = False, reward_wrapper: gym.Wrapper = None) -> GymEnv:
@@ -133,14 +127,14 @@ def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: boo
 		transforms = instantiate_transforms(_trsf)
 
 		env = TransformedEnv(
-                GymWrapper(env),
-                transform=transforms
-        )
+				GymWrapper(env),
+				transform=transforms
+		)
 	else:
 		env = GymWrapper(env)
 
 	if _info_keys:
-		logging.info(f"Setting info dict with keys {_info_keys}")
+		logging.debug(f"Setting info dict with keys {_info_keys}")
 		env.set_info_dict_reader(default_info_dict_reader(_info_keys))
 
 	_seed = cfg.eval.get("seed", -1) if is_eval else cfg.env.get("seed", -1)
@@ -197,12 +191,6 @@ def make_agent(cfg: DictConfig, env: GymEnv) -> TensorDictModule:
 	
 	return ac_module
 
-"""
-def register_loss_resolvers(module: TensorDict, loss_module: LossModule):
-	OmegaConf.register_new_resolver("loss_log_alpha", lambda: [loss_module.log_alpha], replace=True)
-	OmegaConf.register_new_resolver("agent_policy_parameters", lambda: module.get_policy_operator().parameters(), replace=True)
-	OmegaConf.register_new_resolver("agent_critic_parameters", lambda: module.get_critic_operator().parameters(), replace=True)
-"""
 
 def make_loss(cfg: DictConfig, module: TensorDictModule) -> Tuple[LossModule, Optional[TargetNetUpdater]]:
 	"""
@@ -350,9 +338,11 @@ def make_logger(cfg: DictConfig) -> Logger:
 	"""
 	Create the logger
 	"""
-	
+	kwargs = {}
 	wandb_kwargs = cfg.logger.get("wandb_kwargs", {})
 	if wandb_kwargs:
+		wandb_kwargs = dict(wandb_kwargs)
+		wandb_kwargs.update({"config": dict(cfg)})
 		kwargs = {"wandb_kwargs": wandb_kwargs}
 
 	return get_logger(logger_type=cfg.logger.logger_type,
@@ -373,7 +363,7 @@ def update_config_savedir(bbench_config, run_id):
 	return bbench_config
 
 
-def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: TensorDict, clip_grad_func: Dict[str, float], store_per_param_grad: bool = False, param_id_to_name: Optional[Dict[int, str]] = None) -> Tuple[Dict, Dict]:
+def compute_grads(optimizers: Dict[str, torch.optim.Optimizer], losses: TensorDict, clip_grad_func: Dict[str, float]) -> Tuple[Dict, Dict]:
 	"""
 	Backward steps through the losses for which an optimizer is specified.
 
@@ -388,13 +378,14 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 	"""
 
 	lossnames_l = []
+	total_loss = 0
 
 	norm_val = {}
-	per_param_grads = {}
+	for optim_name, optim in optimizers.items():
+		optim.zero_grad()
 
 	for optim_name, optim in optimizers.items():
 		loss_name = optim_name.replace("optimizer", "loss")
-		clip_name = optim_name.replace("optimizer", "clip")
 		
 		if not loss_name in losses:
 			logging.warning(f"Loss item {loss_name} not found. Available entries are {losses.keys()}.")
@@ -403,19 +394,12 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 		lossnames_l.append(loss_name)
 			
 		loss: torch.Tensor = losses[loss_name]
-		optim.zero_grad()
-		loss.backward()
+		total_loss += loss
 
-		if store_per_param_grad:
-			# collect gradient norms for parameters referenced by this optimizer
-			# always key by parameter id (pid) so the caller can map ids to names externally
-			for g_idx, group in enumerate(optim.param_groups):
-				for p_idx, p in enumerate(group.get('params', [])):
-					pid = id(p)
-					if p.grad is None:
-						per_param_grads[pid] = 0.0
-					else:
-						per_param_grads[pid] = float(p.grad.detach().cpu().norm().item())
+	total_loss.backward()
+
+	for optim_name, optim in optimizers.items():
+		clip_name = optim_name.replace("optimizer", "clip")
 
 		if clip_name in clip_grad_func:
 			# Apply gradient norm clipping using the parameters referenced by the optimizer.
@@ -427,11 +411,34 @@ def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer], losses: Tensor
 			val = total_norm.item()			
 			norm_val[clip_name.replace("clip", "grad")] = val
 		
+	return norm_val
+
+def step_optimizers(optimizers: Dict[str, torch.optim.Optimizer]):
+	for optim_name, optim in optimizers.items():
+
 		optim.step()
+
+def log_model(module: TensorDictModule, logger: Logger, step: int, module_name=""):
+	if not isinstance(logger, WandbLogger):
+		return
 	
-	return norm_val, per_param_grads
+	for name, p in module.named_parameters():
+		# convert weights to 1d numpy safely
+		w = p.detach().cpu().numpy().ravel()
+		# optionally downsample large tensors
+		#if w.size > 100_000:
+		#	w = np.random.choice(w, 100_000, replace=False)
 
+		logger.log_histogram(f"{module_name}/weights/{name}", w, step=step, bins=64)
 
+		if p.grad is not None:
+			g = p.grad.detach().cpu().numpy().ravel()
+			#if g.size > 100_000:
+			#	g = np.random.choice(g, 100_000, replace=False)
+			logger.log_histogram(f"{module_name}/grads/{name}", g, step=step, bins=64)
+		else:
+			# optional: log an indicator that grad is missing
+			logger.log_scalar(f"{module_name}/grads/{name}", 0, step=step)
 
 def save_model(cfg: DictConfig, save_dir: str, logger: Logger, agent:TensorDictModule, loss_module: LossModule, optimizers: Dict[str, torch.optim.Optimizer], predictor=None):
 	"""
@@ -471,12 +478,14 @@ def log_info_keys(cfg: DictConfig, td: TensorDict, logging_dict: Dict[str, Any])
 
 	info_keys = cfg.env.get("info_keys", [])
 
+	_flat_td = td.flatten_keys(separator='/')
+
 	if info_keys is None:
 		return
 
 	for key in info_keys:
-		if not key in td.keys():
+		if not key in _flat_td.keys():
 			# Do not issue warning or it will flood the terminal, simply ignore
 			continue
 		
-		logging_dict[f"info/{key}"] = td[key].mean().item()
+		logging_dict[f"info/{key}"] = _flat_td[key][0].cpu()

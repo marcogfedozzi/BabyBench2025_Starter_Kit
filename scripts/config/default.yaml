@@ -5,17 +5,18 @@ defaults:
 - predictor: forward_inverse
 - module: sac
 - loss: soft_sac_loss
-- optimizers: sac_adam
+- optimizers: sac_adamw
 - collector: multiasync
 - replay_buffer: default
 - _self_
 
 seed: 42
 obs_modality: touch
-train_steps: 200_000
-init_rand_frames: 1_000
+train_steps: 250_000
+init_rand_frames: 10_000
 pbar_every: 1000
 grad_log_every: 1000
+log_every: 500
 
 eval:
   seed: 0
@@ -44,3 +45,7 @@ replay_buffer:
 
 collector:
   frames_per_batch: 16
+
+
+predictor:
+  log_net_outputs: false
