@@ -13,6 +13,9 @@ import babybench.utils as bb_utils
 import babybench.eval as bb_eval
 import babybench.rewards as bb_rewards
 
+from tensordict.nn import TensorDictModule
+from tensordict import TensorDict
+
 import torch
 from torchrl.envs.utils import ExplorationType, set_exploration_type
 
@@ -22,6 +25,24 @@ import hydra
 import os
 import omegaconf
 from functools import partial
+import cv2 as cv
+
+class AgentActionScalerModule(TensorDictModule):
+	def __init__(self, agent_module: TensorDictModule, scale: float = 1.0, action_key='action'):
+			# keep in/out keys consistent with wrapped module when possible
+			in_keys = getattr(agent_module, "in_keys", [])
+			out_keys = getattr(agent_module, "out_keys", [])
+			super().__init__(agent_module, in_keys=in_keys, out_keys=out_keys)
+			self.agent_module = agent_module
+			self.scale = scale
+			self.action_key = action_key
+
+	def forward(self, tensordict: TensorDict) -> TensorDict:
+			out = self.agent_module(tensordict)
+			if self.action_key in out.keys():
+					a = out.get(self.action_key)
+					out.set(self.action_key, a * self.scale)
+			return out
 
 def main():
 	
@@ -90,6 +111,8 @@ def main():
 
 	agent = rlu.make_agent(cfg, env)
 
+	#agent = AgentActionScalerModule(agent, scale=100)
+
 	"""
 	agent_file = os.path.join(run_dir, "actor_module.pth")
 
@@ -104,6 +127,27 @@ def main():
 		# re-raise so caller sees the failure
 		raise
 	"""
+
+	def show_rand_imgs(eval, n_imgs, k):
+		
+		from random import sample
+		from math import sqrt, floor, ceil
+
+		imgs = sample(eval._images, n_imgs)
+		n_cols = floor(sqrt(n_imgs))
+		n_rows = ceil(n_imgs/n_cols)
+
+		H, W, D = imgs[0].shape # H, W, D
+
+		img_collection = np.zeros((H*n_rows, W*n_cols, D))
+
+		for i in range(n_rows):
+			for j in range(n_cols):
+				img_collection[i*H:(i+1)*H, j*W:(j+1)*W] = imgs[i*n_rows+j]
+		
+		print(f"{n_imgs} images samples, now showing: ")
+		cv.imwrite(f"img_collection_{k}.jpg", img_collection)
+		print(f"Images saved 'img_collection_{k}.jpg'")
 
 
 	###
@@ -141,7 +185,10 @@ def main():
 
 				# Perform evaluations of step
 				evaluation.eval_step(info)
+
 				
+			print(f"Found {len(evaluation._images)} images")
+			show_rand_imgs(evaluation, 4, ep_idx)
 			evaluation.end(episode=ep_idx)
 
 
