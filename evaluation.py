@@ -59,14 +59,17 @@ def main():
 						help='Name of the run')
 	args = parser.parse_args()
 
-	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+	#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	torch.manual_seed(42)
 
+	print("pre-config")
 	
 	with open(args.config) as f:
 		eval_config = yaml.safe_load(f)
 
 	run_dir = os.path.join("models", "run_"+args.run)
+
+	print("pre-hydra")
 
 	cfg = _get_hydra_config(run_dir)
 
@@ -80,6 +83,8 @@ def main():
 	_throwaway_env = rlu.make_env(cfg, eval_config, is_eval=True) # dumb but quick way to set needed resolvers
 	# think instead about passing the env to the predictor
 
+	print("pre-dictor")
+
 	predictor = rlu.make_predictor(cfg)
 
 	# Intrinsic Reward Wrapper
@@ -89,11 +94,12 @@ def main():
 		predictor=predictor,
 		run_dir="models/run_"+args.run
 	)
+	print("pre-env")
 
 	# Env
 	env = rlu.make_env(cfg, eval_config, is_eval=True, reward_wrapper=pred_reward)
 	
-
+	print("pre-eval")
 	# Initialize evaluation object
 	evaluation = bb_eval.EVALS[eval_config['behavior']](
 		env=env,
@@ -103,11 +109,14 @@ def main():
 	)
 
 	# Preview evaluation of training log
+	print("pre-eval-log")
+
 	evaluation.eval_logs()
 
 	###
 
 	# Module
+	print("pre-agent")
 
 	agent = rlu.make_agent(cfg, env)
 
@@ -133,22 +142,29 @@ def main():
 		from random import sample
 		from math import sqrt, floor, ceil
 
-		imgs = sample(eval._images, n_imgs)
+		_idxs = sample(range(len(eval._images)), n_imgs)
+		imgs = [eval._images[i] for i in _idxs]
+
+		qpos_collection = np.array([eval._trajectories['qpos'][i] for i in _idxs])
+
 		n_cols = floor(sqrt(n_imgs))
 		n_rows = ceil(n_imgs/n_cols)
 
 		H, W, D = imgs[0].shape # H, W, D
 
-		img_collection = np.zeros((H*n_rows, W*n_cols, D))
+		img_collection = np.zeros((H*n_rows, W*n_cols, D), dtype=imgs[0].dtype)
 
 		for i in range(n_rows):
 			for j in range(n_cols):
 				img_collection[i*H:(i+1)*H, j*W:(j+1)*W] = imgs[i*n_rows+j]
-		
-		print(f"{n_imgs} images samples, now showing: ")
-		cv.imwrite(f"img_collection_{k}.jpg", img_collection)
+		print(img_collection.dtype)
+		print(_idxs)
+		print(f"Mean {qpos_collection.mean(axis=1)}")
+		print(f"Std {qpos_collection.std(axis=1)}")
+		cv.imwrite(f"img_collection_{k}.jpg", cv.cvtColor(img_collection, cv.COLOR_RGB2BGR))
 		print(f"Images saved 'img_collection_{k}.jpg'")
 
+	print("pre-loop")
 
 	###
 	with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
@@ -159,28 +175,42 @@ def main():
 
 			# Reset environment and evaluation
 			#obs = env.reset()
-			evaluation.reset()
+			td = evaluation.reset()
 
-			td = env.rollout(args.duration, agent, auto_cast_to_device=True)
+			#td = env.rollout(args.duration, agent, auto_cast_to_device=True)
+
+			# Note to self:
+			# the evaluation is not working 'cause it expects step-by-step calls
+			# instead of the rollout method.
+			# Easy fix: call the step method instead of rollout
+			# Clean fix: add qpos and images to the returned tensordict from rollout
+			# with an Env transformation
+
+
 			#print("Touch")
 			#print(torch.linalg.vector_norm(td["touch"], dim=-1))
 			#print(torch.max(td["touch"], dim=-1))
 			#print(torch.min(td["touch"], dim=-1))
-			print("Action")
-			print(td["action"])
+			#print("Action")
+			#print(td["action"])
 			#print(torch.linalg.vector_norm(td["action"], dim=-1))
 			#print(torch.max(td["action"], dim=-1))
 			#print(torch.min(td["action"], dim=-1))
 			#print("Reward")
 			#print(td[("next", "reward")])
-			print("------------------------")
 
 			for t_idx in range(args.duration):
+				print(t_idx)
+
+				td = agent(td)
+				td = env.step(td)
+				td = env.step_mdp(td)
+
 				# Note: there's really nothing useful in the info dict
 				info = {
-					"terminated": td["terminated"][t_idx],
-					"truncated": td["truncated"][t_idx],
-					"done": td["done"][t_idx]
+					"terminated": td["terminated"],
+					"truncated": td["truncated"],
+					"done": td["done"]				
 				}
 
 				# Perform evaluations of step
@@ -190,6 +220,7 @@ def main():
 			print(f"Found {len(evaluation._images)} images")
 			show_rand_imgs(evaluation, 4, ep_idx)
 			evaluation.end(episode=ep_idx)
+			print("------------------------")
 
 
 def _get_hydra_config(config_path):
