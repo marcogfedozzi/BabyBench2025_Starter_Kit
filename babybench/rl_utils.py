@@ -112,10 +112,7 @@ def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: boo
 	# and instead of init_stats assign them directly to ObsNorm after computing the
 	# mean of each one (in case of multiple training env and a single eval env)
 
-	print("env-making")
-
 	env = bb_utils.make_env(bbench_config, training=(not is_eval))
-	print("env-made")
 
 	_info_keys = env.reset()[1]
 	
@@ -123,8 +120,6 @@ def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: boo
 		reward_wrapper = hydra.utils.instantiate(cfg.reward, _partial_=True)
 
 	env = reward_wrapper(env)
-
-	print("env-wrapped")
 
 	_trsf = cfg.env.get("transform", None)
 	if _trsf is not None:
@@ -148,7 +143,6 @@ def make_env(cfg: OmegaConf, bbench_config: Any, seed_mod: int = 0, is_eval: boo
 	if isinstance(env, TransformedEnv):
 		init_stats(env, num_iter=cfg.env.init_stats_iter)
 
-	print("pre-gister-resolvers")
 	register_env_resolvers(env)
  
 	return env

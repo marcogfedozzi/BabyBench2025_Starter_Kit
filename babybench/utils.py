@@ -32,6 +32,7 @@ def make_env(config=None, training=True):
     else:
         assert os.path.exists(config['save_dir']), "Save directory does not exist, did you run training with this config?"
         assert os.path.exists(scene_path), "Scene file does not exist, did you run training with this config?"
+    
     env = gym.make(
         ENVS[config['behavior']],
         model_path=os.path.abspath(scene_path),

@@ -1,15 +1,8 @@
 import numpy as np
 import os
-import gymnasium as gym
-import time
 import argparse
-import mujoco
 import yaml
 
-import mimoEnv
-from mimoEnv.envs.mimo_env import MIMoEnv
-import mimoEnv.utils as env_utils
-import babybench.utils as bb_utils
 import babybench.eval as bb_eval
 import babybench.rewards as bb_rewards
 
@@ -23,7 +16,6 @@ from babybench import rl_utils as rlu
 from hydra import compose, initialize
 import hydra
 import os
-import omegaconf
 from functools import partial
 import cv2 as cv
 
@@ -57,19 +49,17 @@ def main():
 						help='Number of evaluation episode')
 	parser.add_argument('--run', default=None, type=str,
 						help='Name of the run')
+	parser.add_argument('--test', default=False, type=bool,
+						help='Run in test mode skipping pretraining')
 	args = parser.parse_args()
 
-	#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	torch.manual_seed(42)
 
-	print("pre-config")
-	
 	with open(args.config) as f:
 		eval_config = yaml.safe_load(f)
 
 	run_dir = os.path.join("models", "run_"+args.run)
-
-	print("pre-hydra")
 
 	cfg = _get_hydra_config(run_dir)
 
@@ -82,8 +72,7 @@ def main():
 	# Env
 	_throwaway_env = rlu.make_env(cfg, eval_config, is_eval=True) # dumb but quick way to set needed resolvers
 	# think instead about passing the env to the predictor
-
-	print("pre-dictor")
+	del _throwaway_env
 
 	predictor = rlu.make_predictor(cfg)
 
@@ -94,12 +83,9 @@ def main():
 		predictor=predictor,
 		run_dir="models/run_"+args.run
 	)
-	print("pre-env")
-
 	# Env
 	env = rlu.make_env(cfg, eval_config, is_eval=True, reward_wrapper=pred_reward)
 	
-	print("pre-eval")
 	# Initialize evaluation object
 	evaluation = bb_eval.EVALS[eval_config['behavior']](
 		env=env,
@@ -109,33 +95,30 @@ def main():
 	)
 
 	# Preview evaluation of training log
-	print("pre-eval-log")
-
 	evaluation.eval_logs()
 
 	###
 
 	# Module
-	print("pre-agent")
 
 	agent = rlu.make_agent(cfg, env)
 
-	#agent = AgentActionScalerModule(agent, scale=100)
 
-	"""
 	agent_file = os.path.join(run_dir, "actor_module.pth")
 
 	# load saved state dict
 	loaded = None
-	try:
-		loaded = torch.load(agent_file, map_location=device)
-		agent.load_state_dict(loaded)
-		print("Loaded policy and Q-value modules from", agent_file)
-	except Exception as e:
-		print(f"ERROR loading state dict from {agent_file}:", e)
-		# re-raise so caller sees the failure
-		raise
-	"""
+	if args.run is not None and args.test is False:
+		try:
+			loaded = torch.load(agent_file, map_location=device)
+			agent.load_state_dict(loaded)
+			print("Loaded policy and Q-value modules from", agent_file)
+		except Exception as e:
+			print(f"ERROR loading state dict from {agent_file}:", e)
+			# re-raise so caller sees the failure
+			raise
+
+	# agent = AgentActionScalerModule(agent, scale=100)
 
 	def show_rand_imgs(eval, n_imgs, k):
 		
@@ -157,14 +140,12 @@ def main():
 		for i in range(n_rows):
 			for j in range(n_cols):
 				img_collection[i*H:(i+1)*H, j*W:(j+1)*W] = imgs[i*n_rows+j]
-		print(img_collection.dtype)
 		print(_idxs)
+		print(qpos_collection.shape)
 		print(f"Mean {qpos_collection.mean(axis=1)}")
 		print(f"Std {qpos_collection.std(axis=1)}")
 		cv.imwrite(f"img_collection_{k}.jpg", cv.cvtColor(img_collection, cv.COLOR_RGB2BGR))
 		print(f"Images saved 'img_collection_{k}.jpg'")
-
-	print("pre-loop")
 
 	###
 	with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
@@ -174,35 +155,15 @@ def main():
 			print(f'Running evaluation episode {ep_idx+1}/{args.episodes}')
 
 			# Reset environment and evaluation
-			#obs = env.reset()
-			td = evaluation.reset()
+			evaluation.reset()
+			td = env.reset()
 
 			#td = env.rollout(args.duration, agent, auto_cast_to_device=True)
 
-			# Note to self:
-			# the evaluation is not working 'cause it expects step-by-step calls
-			# instead of the rollout method.
-			# Easy fix: call the step method instead of rollout
-			# Clean fix: add qpos and images to the returned tensordict from rollout
-			# with an Env transformation
-
-
-			#print("Touch")
-			#print(torch.linalg.vector_norm(td["touch"], dim=-1))
-			#print(torch.max(td["touch"], dim=-1))
-			#print(torch.min(td["touch"], dim=-1))
-			#print("Action")
-			#print(td["action"])
-			#print(torch.linalg.vector_norm(td["action"], dim=-1))
-			#print(torch.max(td["action"], dim=-1))
-			#print(torch.min(td["action"], dim=-1))
-			#print("Reward")
-			#print(td[("next", "reward")])
 
 			for t_idx in range(args.duration):
-				print(t_idx)
 
-				td = agent(td)
+				td = agent(td.to(device)).to(env.device)
 				td = env.step(td)
 				td = env.step_mdp(td)
 
@@ -216,9 +177,7 @@ def main():
 				# Perform evaluations of step
 				evaluation.eval_step(info)
 
-				
-			print(f"Found {len(evaluation._images)} images")
-			show_rand_imgs(evaluation, 4, ep_idx)
+			# show_rand_imgs(evaluation, 4, ep_idx)
 			evaluation.end(episode=ep_idx)
 			print("------------------------")
 
